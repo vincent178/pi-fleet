@@ -261,6 +261,39 @@ test("refresh does not overwrite moves committed by another Fleet instance", asy
   assert.equal((await fleet.store.read()).assignments[0].paneId, "w1:p99");
 });
 
+test("concurrent refreshes cannot restore an older location", async (t) => {
+  const { fleet, herdr, cwd, taskCard } = await fixture(t);
+  await fleet.createTeam({ name: "team-a", noUi: true });
+  const assignment = await fleet.dispatch({ team: "team-a", task: taskCard });
+  const secondFleet = new Fleet({ cwd, root: ".fleet", herdr });
+  const staleAgent = { ...herdr.agents.get(assignment.name) };
+  const movedAgent = {
+    ...staleAgent,
+    pane_id: "w1:p99",
+    tab_id: "w1:t99",
+    workspace_id: "w1",
+  };
+  const resolvers = [];
+  herdr.listAgents = () =>
+    new Promise((resolve) => {
+      resolvers.push(resolve);
+    });
+  const firstRefresh = fleet.refresh();
+  for (let attempt = 0; attempt < 20 && resolvers.length < 1; attempt += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  const secondRefresh = secondFleet.refresh();
+  for (let attempt = 0; attempt < 20 && resolvers.length < 2; attempt += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.equal(resolvers.length, 2);
+  resolvers[0]([movedAgent]);
+  await firstRefresh;
+  resolvers[1]([staleAgent]);
+  await secondRefresh;
+  assert.equal((await fleet.store.read()).assignments[0].paneId, "w1:p99");
+});
+
 test("failed dispatch moves remain tracked until release", async (t) => {
   const { fleet, herdr, taskCard } = await fixture(t);
   await fleet.createTeam({ name: "team-a", noUi: true });

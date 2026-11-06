@@ -336,6 +336,10 @@ export class Fleet {
           assignment.herdrState = "missing";
         } else {
           const revisionChanged = (assignment.locationRevision ?? 0) !== (locationRevisions.get(assignment.id) ?? 0);
+          const nextLocation = [agent.workspace_id, agent.tab_id, agent.pane_id].join(":");
+          if (!revisionChanged && nextLocation !== previousLocation) {
+            assignment.locationRevision = (assignment.locationRevision ?? 0) + 1;
+          }
           if (!revisionChanged) {
             assignment.workspaceId = agent.workspace_id ?? assignment.workspaceId;
             assignment.tabId = agent.tab_id ?? assignment.tabId;
