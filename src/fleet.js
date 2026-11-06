@@ -216,6 +216,10 @@ export class Fleet {
     const prompt =
       options.prompt?.replaceAll("{task}", taskCard ?? "").replaceAll("{role}", role).replaceAll("{team}", options.team) ??
       this.defaultPrompt({ role, team: options.team, taskCard });
+    const leadSummary = role === "lead" ? (await this.store.read()).summary : null;
+    if (role === "lead" && !leadSummary?.paneId) {
+      throw new FleetError("The fleet has no summary pane. Run init without --no-ui.", "fleet_ui_missing");
+    }
     const reserved = await this.reserveAssignment({
       ...options,
       role,
@@ -228,11 +232,7 @@ export class Fleet {
     try {
       let pane;
       if (role === "lead") {
-        const summary = (await this.store.read()).summary;
-        if (!summary?.paneId) {
-          throw new FleetError("The fleet has no summary pane. Run init without --no-ui.", "fleet_ui_missing");
-        }
-        pane = await this.herdr.splitPane({ paneId: summary.paneId, cwd });
+        pane = await this.herdr.splitPane({ paneId: leadSummary.paneId, cwd });
         await this.store.update((registry) => {
           const assignment = registry.assignments.find((item) => item.id === assignmentId);
           Object.assign(assignment, {

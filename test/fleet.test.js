@@ -178,3 +178,13 @@ test("lead release preserves the coordinator and fleet summary", async (t) => {
   assert.ok(herdr.panes.has("w1:p0"));
   assert.ok(herdr.panes.has(summary.paneId));
 });
+
+test("lead dispatch validates the fleet summary before reservation", async (t) => {
+  const { fleet } = await fixture(t);
+  await fleet.createTeam({ name: "team-a" });
+  await assert.rejects(fleet.dispatch({ team: "team-a", role: "lead" }), { code: "fleet_ui_missing" });
+  assert.equal((await fleet.store.read()).assignments.length, 0);
+  await fleet.init();
+  const lead = await fleet.dispatch({ team: "team-a", role: "lead" });
+  assert.equal(lead.status, "dispatched");
+});
