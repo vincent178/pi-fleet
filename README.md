@@ -1,13 +1,32 @@
 # pi-fleet
 
-**pi-fleet manages teams of pi agents through Herdr.**
+**Coordinate teams of pi agents through Herdr.**
+
+## Why use pi-fleet?
+
+Multiple agents can work on independent tasks in parallel. Manual coordination
+requires you to open panes, deliver prompts, track task ownership, monitor
+agent states, and close panes after the work.
+
+Pi-fleet gives one pi coordinator control of that work. Use it to:
+
+- **Delegate without blocking.** Dispatch returns after prompt delivery. The
+  coordinator can continue other work while agents run.
+- **Keep tasks organized.** Each task has a dedicated tab for its worker and
+  verifier. The fleet summary shows active assignments and inactive states.
+- **Control capacity.** Team limits control the number of active workers.
+  Assignment records prevent duplicate worker and verifier dispatches.
+- **Monitor agent states.** Inspect all assignments in one view. Wait for an
+  agent to settle or block.
+- **Clean up safely.** Release closes only panes and tabs that pi-fleet created.
+
+Pi-fleet coordinates agents, not task outcomes. A settled assignment does not
+prove task completion. Your task workflow must define requirements, record
+evidence, and verify completion.
 
 The package contains a Node.js CLI and a pi extension. The CLI owns teams,
 assignments, registry records, and Herdr layouts. The pi extension exposes
 those operations through `/fleet` and the `fleet` tool.
-
-Pi-fleet does not manage task requirements or completion. The task workflow
-retains those responsibilities.
 
 ## Requirements
 
