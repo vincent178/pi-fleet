@@ -199,7 +199,6 @@ export class Fleet {
         updatedAt: timestamp,
         releasedAt: null,
         error: null,
-        locationRevision: 0,
       };
       registry.assignments.push(assignment);
       return { assignment, task };
@@ -316,12 +315,9 @@ export class Fleet {
   }
 
   async refreshNow(team) {
-    const locationRevisions = new Map(
-      (await this.store.read()).assignments.map((assignment) => [assignment.id, assignment.locationRevision ?? 0]),
-    );
-    const agents = await this.herdr.listAgents();
-    const byName = new Map(agents.filter((agent) => agent.name).map((agent) => [agent.name, agent]));
-    await this.store.update((registry) => {
+    await this.store.update(async (registry) => {
+      const agents = await this.herdr.listAgents({ timeoutMs: 5000 });
+      const byName = new Map(agents.filter((agent) => agent.name).map((agent) => [agent.name, agent]));
       for (const assignment of registry.assignments) {
         if (team && assignment.team !== team) continue;
         const tracked = ACTIVE.has(assignment.status) || assignment.status === "settled";
@@ -335,22 +331,15 @@ export class Fleet {
           assignment.status = "missing";
           assignment.herdrState = "missing";
         } else {
-          const revisionChanged = (assignment.locationRevision ?? 0) !== (locationRevisions.get(assignment.id) ?? 0);
-          const nextLocation = [agent.workspace_id, agent.tab_id, agent.pane_id].join(":");
-          if (!revisionChanged && nextLocation !== previousLocation) {
-            assignment.locationRevision = (assignment.locationRevision ?? 0) + 1;
-          }
-          if (!revisionChanged) {
-            assignment.workspaceId = agent.workspace_id ?? assignment.workspaceId;
-            assignment.tabId = agent.tab_id ?? assignment.tabId;
-            assignment.paneId = agent.pane_id ?? assignment.paneId;
-          }
+          assignment.workspaceId = agent.workspace_id ?? assignment.workspaceId;
+          assignment.tabId = agent.tab_id ?? assignment.tabId;
+          assignment.paneId = agent.pane_id ?? assignment.paneId;
           const state = agent.agent_status ?? "unknown";
           assignment.herdrState = state;
           if (state === "working" || state === "blocked") assignment.status = state;
           else if (state === "idle" || state === "done") assignment.status = "settled";
           else assignment.status = "unknown";
-          if (!revisionChanged && assignment.role === "worker" && assignment.taskId) {
+          if (assignment.role === "worker" && assignment.taskId) {
             const task = registry.tasks.find((item) => item.id === assignment.taskId);
             if (task) {
               task.ownedTabId ??= task.tabId;
@@ -388,7 +377,6 @@ export class Fleet {
         assignment.workspaceId = data.pane.workspace_id;
         assignment.tabId = data.pane.tab_id;
         assignment.paneId = data.pane.pane_id;
-        assignment.locationRevision = (assignment.locationRevision ?? 0) + 1;
         assignment.updatedAt = now();
         matched = true;
         if (assignment.role === "worker" && assignment.taskId) {

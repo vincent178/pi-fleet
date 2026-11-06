@@ -255,20 +255,19 @@ test("refresh does not overwrite moves committed by another Fleet instance", asy
       pane: { pane_id: "w1:p99", tab_id: "w1:t99", workspace_id: "w1" },
     },
   });
-  await moving;
   resolveAgents();
   await refreshing;
+  await moving;
   assert.equal((await fleet.store.read()).assignments[0].paneId, "w1:p99");
 });
 
-test("concurrent refreshes cannot restore an older location", async (t) => {
+test("refreshes serialize snapshots across Fleet instances", async (t) => {
   const { fleet, herdr, cwd, taskCard } = await fixture(t);
   await fleet.createTeam({ name: "team-a", noUi: true });
   const assignment = await fleet.dispatch({ team: "team-a", task: taskCard });
   const secondFleet = new Fleet({ cwd, root: ".fleet", herdr });
-  const staleAgent = { ...herdr.agents.get(assignment.name) };
   const movedAgent = {
-    ...staleAgent,
+    ...herdr.agents.get(assignment.name),
     pane_id: "w1:p99",
     tab_id: "w1:t99",
     workspace_id: "w1",
@@ -279,17 +278,22 @@ test("concurrent refreshes cannot restore an older location", async (t) => {
       resolvers.push(resolve);
     });
   const firstRefresh = fleet.refresh();
-  for (let attempt = 0; attempt < 20 && resolvers.length < 1; attempt += 1) {
-    await new Promise((resolve) => setImmediate(resolve));
+  for (let attempt = 0; attempt < 50 && resolvers.length < 1; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
   }
+  assert.equal(resolvers.length, 1);
   const secondRefresh = secondFleet.refresh();
-  for (let attempt = 0; attempt < 20 && resolvers.length < 2; attempt += 1) {
-    await new Promise((resolve) => setImmediate(resolve));
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  assert.equal(resolvers.length, 2);
+  assert.equal(resolvers.length, 1);
   resolvers[0]([movedAgent]);
   await firstRefresh;
-  resolvers[1]([staleAgent]);
+  for (let attempt = 0; attempt < 50 && resolvers.length < 2; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(resolvers.length, 2);
+  resolvers[1]([movedAgent]);
   await secondRefresh;
   assert.equal((await fleet.store.read()).assignments[0].paneId, "w1:p99");
 });

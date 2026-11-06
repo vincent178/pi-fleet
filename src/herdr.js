@@ -116,8 +116,8 @@ export class HerdrClient {
     return this.run(args, { timeoutMs: timeoutMs + 5000, signal });
   }
 
-  async listAgents() {
-    const response = await this.run(["agent", "list"]);
+  async listAgents({ timeoutMs = 30_000 } = {}) {
+    const response = await this.run(["agent", "list"], { timeoutMs });
     return response.result.agents;
   }
 
