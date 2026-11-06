@@ -10,6 +10,14 @@ import { Fleet } from "../src/fleet.js";
 import { HerdrEventWatcher } from "../src/herdr-events.js";
 import { FakeHerdr } from "./fake-herdr.js";
 
+function deferred() {
+  let resolve;
+  const promise = new Promise((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 function assignment(id, overrides = {}) {
   return {
     id,
@@ -429,6 +437,54 @@ test("stale recovery fences the previous runtime and permits one replacement", a
   assert.deepEqual(second.deliveries.map(({ message }) => message.details.eventId), ["event-after-crash"]);
   await first.coordinator.stop();
   assert.equal(await second.fleet.store.ownsCoordinatorLease(second.coordinator.lease), true);
+});
+
+test("an old owner cannot send after replacement delivery completes", async (t) => {
+  const old = await fixture(t, { leaseDurationMs: 40, leaseRenewMs: 60_000 });
+  await delay(70);
+  await appendEvents(old.fleet, [changed("event-post-check", "a1", "blocked")]);
+  const checked = deferred();
+  const resume = deferred();
+  const confirm = old.coordinator.confirmLease.bind(old.coordinator);
+  const readDelivery = old.fleet.store.readDelivery.bind(old.fleet.store);
+  let deliveryRead = false;
+  let checksAfterRead = 0;
+  old.fleet.store.readDelivery = async (...args) => {
+    const result = await readDelivery(...args);
+    deliveryRead = true;
+    return result;
+  };
+  old.coordinator.confirmLease = async () => {
+    const owned = await confirm();
+    if (owned && deliveryRead) {
+      checksAfterRead += 1;
+      if (checksAfterRead === 3) {
+        checked.resolve();
+        await resume.promise;
+      }
+    }
+    return owned;
+  };
+  const draining = old.coordinator.requestReconciliation();
+  await checked.promise;
+  let replacement;
+  try {
+    replacement = await runtime(t, old, { deliveries: [], warnings: [] });
+    assert.equal(replacement.started, true);
+    assert.deepEqual(
+      replacement.deliveries.map(({ message }) => message.details.eventId),
+      ["event-post-check"],
+    );
+    assert.ok((await old.fleet.store.readDelivery()).handledEventIds.includes("event-post-check"));
+  } finally {
+    resume.resolve();
+  }
+  await draining;
+  assert.equal(old.deliveries.length, 0);
+  assert.equal(old.coordinator.active, false);
+  assert.equal(old.files[0].closed, true);
+  await old.coordinator.stop();
+  assert.equal(await old.fleet.store.ownsCoordinatorLease(replacement.coordinator.lease), true);
 });
 
 test("orphaned events are recorded without blocking later valid events", async (t) => {

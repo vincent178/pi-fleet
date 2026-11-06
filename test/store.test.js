@@ -6,6 +6,14 @@ import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { RegistryStore, registryEventId } from "../src/store.js";
 
+function deferred() {
+  let resolve;
+  const promise = new Promise((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 async function storeFixture(t) {
   const root = await mkdtemp(join(tmpdir(), "pi-fleet-store-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -71,6 +79,24 @@ test("stale lease recovery fences the old owner and preserves the replacement", 
   assert.equal((await store.readCoordinatorLease()).ownerId, replacement.ownerId);
 });
 
+test("concurrent stale recovery permits one coordinator acquisition", async (t) => {
+  const store = await storeFixture(t);
+  const stale = await store.acquireCoordinatorLease({ leaseMs: 25 });
+  const stores = Array.from({ length: 8 }, () => new RegistryStore(store.root));
+  let leases = [];
+  t.after(async () => {
+    await store.releaseCoordinatorLease(stale);
+    await Promise.all(leases.map((lease, index) => stores[index].releaseCoordinatorLease(lease)));
+  });
+  await delay(55);
+  leases = await Promise.all(stores.map((item) => item.acquireCoordinatorLease({ leaseMs: 500 })));
+  const winners = leases.filter(Boolean);
+  assert.equal(winners.length, 1);
+  assert.equal(await store.ownsCoordinatorLease(stale), false);
+  assert.equal(await store.releaseCoordinatorLease(stale), false);
+  assert.equal((await store.readCoordinatorLease()).ownerId, winners[0].ownerId);
+});
+
 test("coordinator lease renewal extends expiry without changing ownership", async (t) => {
   const store = await storeFixture(t);
   const lease = await store.acquireCoordinatorLease({ leaseMs: 100 });
@@ -81,6 +107,35 @@ test("coordinator lease renewal extends expiry without changing ownership", asyn
   assert.ok(lease.expiresAt > initialExpiry);
   assert.equal((await store.readCoordinatorLease()).ownerId, lease.ownerId);
   assert.equal(await store.acquireCoordinatorLease(), null);
+});
+
+test("coordinator lease renewal exposes valid JSON to concurrent readers", async (t) => {
+  const store = await storeFixture(t);
+  const lease = await store.acquireCoordinatorLease({ leaseMs: 500 });
+  t.after(() => store.releaseCoordinatorLease(lease));
+  const truncated = deferred();
+  const resume = deferred();
+  const write = lease.handle.write.bind(lease.handle);
+  lease.handle.write = async (...args) => {
+    truncated.resolve();
+    await resume.promise;
+    return write(...args);
+  };
+  const renewing = store.renewCoordinatorLease(lease, 500);
+  await Promise.race([truncated.promise, renewing]);
+  let current;
+  let error;
+  try {
+    current = await store.readCoordinatorLease();
+  } catch (caught) {
+    error = caught;
+  } finally {
+    resume.resolve();
+  }
+  assert.equal(await renewing, true);
+  assert.ifError(error);
+  assert.equal(current.ownerId, lease.ownerId);
+  assert.equal(Number.isFinite(current.expiresAt), true);
 });
 
 test("assignment transitions append JSONL events", async (t) => {

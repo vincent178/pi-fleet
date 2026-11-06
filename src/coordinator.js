@@ -177,6 +177,11 @@ export class AssignmentCoordinator {
   async confirmLease() {
     if (!this.active) return false;
     if (this.lease && (await this.store.ownsCoordinatorLease(this.lease))) return true;
+    return this.loseLease();
+  }
+
+  async loseLease() {
+    if (!this.active) return false;
     this.deactivate();
     this.onWarning(new FleetError("The coordinator lease is no longer valid.", "coordinator_lease_lost"));
     await this.releaseLease();
@@ -259,33 +264,42 @@ export class AssignmentCoordinator {
         await this.persistHandled([id], handled);
         continue;
       }
-      await this.deliver(
-        {
-          customType: "fleet-assignment",
-          content: formatAssignmentMessage(event, assignment),
-          display: false,
-          details: {
-            eventId: id,
-            event: {
-              id: event.id,
-              timestamp: event.timestamp,
-              type: event.type,
-              assignmentId: event.assignmentId,
-              from: event.from,
-              to: event.to,
-            },
-            assignment: {
-              id: assignment.id,
-              name: assignment.name,
-              team: assignment.team,
-              role: assignment.role,
-              taskId: assignment.taskId,
-              taskCard: assignment.taskCard,
+      const lease = this.lease;
+      const sent = await this.store.runWithCoordinatorLease(lease, async () => {
+        if (!this.active || this.lease !== lease) return false;
+        await this.deliver(
+          {
+            customType: "fleet-assignment",
+            content: formatAssignmentMessage(event, assignment),
+            display: false,
+            details: {
+              eventId: id,
+              event: {
+                id: event.id,
+                timestamp: event.timestamp,
+                type: event.type,
+                assignmentId: event.assignmentId,
+                from: event.from,
+                to: event.to,
+              },
+              assignment: {
+                id: assignment.id,
+                name: assignment.name,
+                team: assignment.team,
+                role: assignment.role,
+                taskId: assignment.taskId,
+                taskCard: assignment.taskCard,
+              },
             },
           },
-        },
-        { triggerTurn: true, deliverAs: "followUp" },
-      );
+          { triggerTurn: true, deliverAs: "followUp" },
+        );
+        return true;
+      });
+      if (!sent) {
+        await this.loseLease();
+        return;
+      }
       await this.persistHandled([id], handled);
     }
   }
