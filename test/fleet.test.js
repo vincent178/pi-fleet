@@ -127,6 +127,44 @@ test("release closes the moved worker pane and the owned task tab", async (t) =>
   assert.deepEqual(herdr.closedTabs, [ownedTabId]);
 });
 
+test("release aborts when a live agent moves during pane closure", async (t) => {
+  const { fleet, herdr, taskCard } = await fixture(t);
+  await fleet.createTeam({ name: "team-a", noUi: true });
+  const assignment = await fleet.dispatch({ team: "team-a", task: taskCard });
+  herdr.agents.get(assignment.name).agent_status = "done";
+  await fleet.status();
+  const closePane = herdr.closePane.bind(herdr);
+  let moved = false;
+  herdr.closePane = async (paneId, options) => {
+    if (moved || paneId !== assignment.paneId) return closePane(paneId, options);
+    moved = true;
+    herdr.panes.delete(paneId);
+    herdr.panes.set("w1:p99", { pane_id: "w1:p99", tab_id: "w1:t99", workspace_id: "w1" });
+    Object.assign(herdr.agents.get(assignment.name), {
+      pane_id: "w1:p99",
+      tab_id: "w1:t99",
+      workspace_id: "w1",
+    });
+    await fleet.reconcileEvent({
+      event: "pane_moved",
+      data: {
+        previous_pane_id: paneId,
+        pane: { pane_id: "w1:p99", tab_id: "w1:t99", workspace_id: "w1" },
+      },
+    });
+  };
+  await assert.rejects(fleet.release(assignment.id), { code: "assignment_moved" });
+  const current = (await fleet.store.read()).assignments[0];
+  assert.equal(current.status, "settled");
+  assert.equal(current.paneId, "w1:p99");
+  assert.equal(current.tabId, "w1:t99");
+  assert.deepEqual(herdr.closedTabs, []);
+  const released = await fleet.release(assignment.id);
+  assert.equal(released.status, "released");
+  assert.deepEqual(herdr.closedPanes, ["w1:p99"]);
+  assert.deepEqual(herdr.closedTabs, [assignment.tabId]);
+});
+
 test("release closes a verifier moved outside the owned task tab", async (t) => {
   const { fleet, herdr, taskCard } = await fixture(t);
   await fleet.createTeam({ name: "team-a", noUi: true });

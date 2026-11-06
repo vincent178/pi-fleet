@@ -315,7 +315,7 @@ export class Fleet {
   }
 
   async refreshNow(team) {
-    await this.store.update(async (registry) => {
+    return this.store.update(async (registry) => {
       const agents = await this.herdr.listAgents({ timeoutMs: 5000 });
       const byName = new Map(agents.filter((agent) => agent.name).map((agent) => [agent.name, agent]));
       for (const assignment of registry.assignments) {
@@ -353,6 +353,7 @@ export class Fleet {
           assignment.updatedAt = now();
         }
       }
+      return byName;
     });
   }
 
@@ -424,6 +425,16 @@ export class Fleet {
     );
     const task = assignment.taskId ? registry.tasks.find((item) => item.id === assignment.taskId) : null;
     if (assignment.paneId) await this.herdr.closePane(assignment.paneId, { allowMissing: true });
+    const agents = await this.refresh();
+    const current = assignmentFrom(await this.store.read(), assignment.id);
+    const currentLocation = [current.workspaceId, current.tabId, current.paneId].join(":");
+    const releaseLocation = [assignment.workspaceId, assignment.tabId, assignment.paneId].join(":");
+    if (agents.has(assignment.name) && currentLocation !== releaseLocation) {
+      throw new FleetError(
+        `Assignment ${assignment.name} moved during release. Release it again at its current location.`,
+        "assignment_moved",
+      );
+    }
     if (task && remaining.length === 0 && task.commandPaneId) {
       await this.herdr.closePane(task.commandPaneId, { allowMissing: true });
     }

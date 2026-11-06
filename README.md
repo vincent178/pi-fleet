@@ -203,6 +203,10 @@ Each assignment release closes its current pane. The last assignment release
 also closes the verifier command pane and the original Fleet-owned task tab
 when they still exist. A manual destination tab is not closed.
 
+Release checks Herdr again after closing the assignment pane. Release aborts
+if a live agent moved during closure. The registry retains the new location.
+Retry the release. A later move can still require manual pane cleanup.
+
 Pi-fleet does not perform these operations:
 
 - Merge branches
