@@ -255,8 +255,9 @@ test("refresh does not overwrite moves committed by another Fleet instance", asy
       pane: { pane_id: "w1:p99", tab_id: "w1:t99", workspace_id: "w1" },
     },
   });
+  await moving;
   resolveAgents();
-  await Promise.all([refreshing, moving]);
+  await refreshing;
   assert.equal((await fleet.store.read()).assignments[0].paneId, "w1:p99");
 });
 
