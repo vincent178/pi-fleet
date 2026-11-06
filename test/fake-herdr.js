@@ -59,7 +59,15 @@ export class FakeHerdr {
 
   async startAgent({ name, paneId }) {
     this.record("startAgent", { name, paneId });
-    this.agents.set(name, { name, agent: "pi", agent_status: "idle", pane_id: paneId });
+    const pane = this.panes.get(paneId);
+    this.agents.set(name, {
+      name,
+      agent: "pi",
+      agent_status: "idle",
+      pane_id: paneId,
+      tab_id: pane?.tab_id,
+      workspace_id: pane?.workspace_id,
+    });
   }
 
   async promptAgent({ name, prompt }) {

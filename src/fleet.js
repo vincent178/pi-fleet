@@ -44,6 +44,13 @@ export class Fleet {
     this.store = new RegistryStore(this.root);
     this.herdr = herdr ?? new HerdrClient({ cwd: this.cwd });
     this.cliPath = cliPath ?? fileURLToPath(new URL("./cli.js", import.meta.url));
+    this.reconciliation = Promise.resolve();
+  }
+
+  serializeReconciliation(operation) {
+    const result = this.reconciliation.then(operation);
+    this.reconciliation = result.catch(() => {});
+    return result;
   }
 
   statusCommand(team, watch = true) {
@@ -167,6 +174,7 @@ export class Fleet {
           tabId: null,
           commandPaneId: null,
           ownsTab: false,
+          ownedTabId: null,
           createdAt: timestamp,
         };
         registry.tasks.push(task);
@@ -263,6 +271,7 @@ export class Fleet {
               workspaceId,
               tabId: created.tab.tab_id,
               ownsTab: true,
+              ownedTabId: created.tab.tab_id,
             });
           });
         }
@@ -301,34 +310,97 @@ export class Fleet {
     return (await this.store.read()).assignments.find((assignment) => assignment.id === assignmentId);
   }
 
-  async refresh() {
-    const agents = await this.herdr.listAgents();
-    const byName = new Map(agents.filter((agent) => agent.name).map((agent) => [agent.name, agent]));
-    await this.store.update((registry) => {
+  refresh(team) {
+    return this.serializeReconciliation(() => this.refreshNow(team));
+  }
+
+  async refreshNow(team) {
+    return this.store.update(async (registry) => {
+      const agents = await this.herdr.listAgents({ timeoutMs: 5000 });
+      const byName = new Map(agents.filter((agent) => agent.name).map((agent) => [agent.name, agent]));
       for (const assignment of registry.assignments) {
-        if (!ACTIVE.has(assignment.status) || assignment.status === "pending") continue;
+        if (team && assignment.team !== team) continue;
+        const tracked = ACTIVE.has(assignment.status) || assignment.status === "settled";
+        if (!tracked || assignment.status === "pending") continue;
         const agent = byName.get(assignment.name);
+        if (!agent && assignment.status === "settled") continue;
         const previousStatus = assignment.status;
         const previousHerdrState = assignment.herdrState;
+        const previousLocation = [assignment.workspaceId, assignment.tabId, assignment.paneId].join(":");
         if (!agent) {
           assignment.status = "missing";
           assignment.herdrState = "missing";
         } else {
+          assignment.workspaceId = agent.workspace_id ?? assignment.workspaceId;
+          assignment.tabId = agent.tab_id ?? assignment.tabId;
+          assignment.paneId = agent.pane_id ?? assignment.paneId;
           const state = agent.agent_status ?? "unknown";
           assignment.herdrState = state;
           if (state === "working" || state === "blocked") assignment.status = state;
           else if (state === "idle" || state === "done") assignment.status = "settled";
           else assignment.status = "unknown";
+          if (assignment.role === "worker" && assignment.taskId) {
+            const task = registry.tasks.find((item) => item.id === assignment.taskId);
+            if (task) {
+              task.ownedTabId ??= task.tabId;
+              task.workspaceId = assignment.workspaceId;
+              task.tabId = assignment.tabId;
+            }
+          }
         }
-        if (assignment.status !== previousStatus || assignment.herdrState !== previousHerdrState) {
+        const location = [assignment.workspaceId, assignment.tabId, assignment.paneId].join(":");
+        if (assignment.status !== previousStatus || assignment.herdrState !== previousHerdrState || location !== previousLocation) {
           assignment.updatedAt = now();
         }
       }
+      return byName;
+    });
+  }
+
+  reconcileEvent(event, team) {
+    if (event.event !== "pane_moved") return Promise.resolve(false);
+    return this.serializeReconciliation(() => this.reconcileMovedPane(event, team));
+  }
+
+  async reconcileMovedPane(event, team) {
+    const data = event.data ?? {};
+    if (!data.previous_pane_id || !data.pane) return false;
+    return this.store.update((registry) => {
+      let matched = false;
+      for (const assignment of registry.assignments) {
+        if (
+          assignment.paneId !== data.previous_pane_id ||
+          assignment.status === "released" ||
+          (team && assignment.team !== team)
+        ) {
+          continue;
+        }
+        assignment.workspaceId = data.pane.workspace_id;
+        assignment.tabId = data.pane.tab_id;
+        assignment.paneId = data.pane.pane_id;
+        assignment.updatedAt = now();
+        matched = true;
+        if (assignment.role === "worker" && assignment.taskId) {
+          const task = registry.tasks.find((item) => item.id === assignment.taskId);
+          if (task) {
+            task.ownedTabId ??= task.tabId;
+            task.workspaceId = assignment.workspaceId;
+            task.tabId = assignment.tabId;
+          }
+        }
+      }
+      for (const task of registry.tasks) {
+        if (task.commandPaneId === data.previous_pane_id && (!team || task.team === team)) {
+          task.commandPaneId = data.pane.pane_id;
+          matched = true;
+        }
+      }
+      return matched;
     });
   }
 
   async status({ team, refresh = true } = {}) {
-    if (refresh) await this.refresh();
+    if (refresh) await this.refresh(team);
     const registry = await this.store.read();
     if (team && !registry.teams.some((item) => item.name === team)) {
       throw new FleetError(`Team not found: ${team}`, "team_not_found");
@@ -352,10 +424,23 @@ export class Fleet {
       (item) => item.taskId === assignment.taskId && item.id !== assignment.id && item.status !== "released",
     );
     const task = assignment.taskId ? registry.tasks.find((item) => item.id === assignment.taskId) : null;
-    if (task && remaining.length === 0 && task.ownsTab && task.tabId) {
-      await this.herdr.closeTab(task.tabId);
-    } else if (assignment.paneId) {
-      await this.herdr.closePane(assignment.paneId);
+    if (assignment.paneId) await this.herdr.closePane(assignment.paneId, { allowMissing: true });
+    const agents = await this.refresh();
+    const current = assignmentFrom(await this.store.read(), assignment.id);
+    const currentLocation = [current.workspaceId, current.tabId, current.paneId].join(":");
+    const releaseLocation = [assignment.workspaceId, assignment.tabId, assignment.paneId].join(":");
+    if (agents.has(assignment.name) && currentLocation !== releaseLocation) {
+      throw new FleetError(
+        `Assignment ${assignment.name} moved during release. Release it again at its current location.`,
+        "assignment_moved",
+      );
+    }
+    if (task && remaining.length === 0 && task.commandPaneId) {
+      await this.herdr.closePane(task.commandPaneId, { allowMissing: true });
+    }
+    const ownedTabId = task?.ownedTabId ?? task?.tabId;
+    if (task && remaining.length === 0 && task.ownsTab && ownedTabId) {
+      await this.herdr.closeTab(ownedTabId, { allowMissing: true });
     }
     await this.store.update((current) => {
       const record = current.assignments.find((item) => item.id === assignment.id);

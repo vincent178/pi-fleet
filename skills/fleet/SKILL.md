@@ -53,7 +53,8 @@ worktrees.
 ## Monitor
 
 Use `pi-fleet status` for a fleet summary. Use `pi-fleet status --team team-a`
-for one team.
+for one team. The watching summary reconciles existing assignments through
+Herdr events. It uses a 30-second poll as a fallback.
 
 Use `pi-fleet wait --assignment <id>` to wait for a settled or blocked agent.
 Use `--until blocked` to wait only for blockage.

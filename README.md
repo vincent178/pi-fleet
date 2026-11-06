@@ -92,7 +92,10 @@ Pi-fleet uses the current Herdr workspace. It does not create a workspace.
 ### Coordinator tab
 
 `pi-fleet init` keeps the coordinator in the current pane. It adds a fleet
-summary pane to the current tab.
+summary pane to the current tab. The summary subscribes to Herdr lifecycle
+and agent-status events. It reconciles existing assignment IDs after each
+event and after reconnects. A 30-second poll provides a fallback. Manual
+panes and tabs do not become Fleet assignments.
 
 ### Team records
 
@@ -115,7 +118,7 @@ operations. It closes only panes and tabs that it created.
 pi-fleet [--root PATH] [--json] init [--no-ui]
 pi-fleet [--root PATH] [--json] team create NAME [--limit N] [--no-ui]
 pi-fleet [--root PATH] [--json] dispatch --team NAME [--task PATH] [options]
-pi-fleet [--root PATH] [--json] status [--team NAME] [--watch] [--no-refresh]
+pi-fleet [--root PATH] [--json] status [--team NAME] [--watch] [--interval MS] [--no-refresh]
 pi-fleet [--root PATH] [--json] wait [--assignment ID|NAME] [--until settled|blocked] [--timeout MS]
 pi-fleet [--root PATH] [--json] release ID|NAME [--force]
 pi-fleet [--root PATH] [--json] reconcile
@@ -184,7 +187,9 @@ task artifacts as completion proof.
 ## Teams and capacity
 
 Each team has a worker limit. Pending, dispatched, working, blocked, missing,
-and unknown workers consume capacity. Settled workers stop consuming capacity.
+and unknown workers consume capacity. Settled workers stop consuming capacity. A settled worker becomes active again
+if Herdr reports new activity. A settled worker stays settled after its agent
+exits.
 
 Release a previous assignment before redispatch of the same role for that task.
 This rule prevents duplicate workers and verifiers.
@@ -194,8 +199,13 @@ This rule prevents duplicate workers and verifiers.
 Release requires a settled, failed, or released assignment. Use `--force` for
 an active assignment.
 
-The last assignment release closes the task tab. Earlier releases close only
-the assignment pane.
+Each assignment release closes its current pane. The last assignment release
+also closes the verifier command pane and the original Fleet-owned task tab
+when they still exist. A manual destination tab is not closed.
+
+Release checks Herdr again after closing the assignment pane. Release aborts
+if a live agent moved during closure. The registry retains the new location.
+Retry the release. A later move can still require manual pane cleanup.
 
 Pi-fleet does not perform these operations:
 
