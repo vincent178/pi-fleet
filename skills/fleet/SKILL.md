@@ -1,6 +1,6 @@
 ---
 name: fleet
-description: Coordinate Herdr-hosted coding agents as teams. Use for agent dispatch, assignment status, event waits, Herdr tab layouts, and fleet cleanup.
+description: Coordinate pi agents through Herdr. Use for agent dispatch, assignment status, event waits, Herdr tab layouts, and fleet cleanup.
 ---
 
 # Fleet coordination

@@ -34,6 +34,7 @@ test("worker dispatch creates a task tab and returns after prompt delivery", asy
   const assignment = await fleet.dispatch({ team: "team-a", task: taskCard });
   assert.equal(assignment.status, "dispatched");
   assert.equal(assignment.role, "worker");
+  assert.equal(herdr.agents.get(assignment.name).agent, "pi");
   assert.ok(assignment.paneId);
   assert.equal(herdr.prompts.length, 1);
   assert.match(herdr.prompts[0].prompt, new RegExp(taskCard.replaceAll("/", "\\/")));
@@ -52,7 +53,7 @@ test("worker limit rejects excess active assignments", async (t) => {
   assert.equal((await fleet.store.read()).assignments.length, 1);
 });
 
-test("verifier shares the task tab and creates a checks pane", async (t) => {
+test("verifier shares the task tab and creates a command pane", async (t) => {
   const { fleet, herdr, taskCard } = await fixture(t);
   await fleet.createTeam({ name: "team-a", noUi: true });
   const worker = await fleet.dispatch({ team: "team-a", task: taskCard });
@@ -60,7 +61,7 @@ test("verifier shares the task tab and creates a checks pane", async (t) => {
   assert.equal(verifier.tabId, worker.tabId);
   assert.notEqual(verifier.paneId, worker.paneId);
   const task = (await fleet.store.read()).tasks[0];
-  assert.ok(task.checkPaneId);
+  assert.ok(task.commandPaneId);
   const directions = herdr.calls.filter((call) => call.name === "splitPane").map((call) => call.value.direction);
   assert.deepEqual(directions, ["right", "down"]);
 });

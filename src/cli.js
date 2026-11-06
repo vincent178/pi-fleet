@@ -6,7 +6,7 @@ import { extractGlobalOptions, positiveInteger } from "./args.js";
 import { renderSnapshot } from "./status.js";
 import { FleetError, messageOf } from "./errors.js";
 
-const HELP = `pi-fleet manages agent teams through Herdr.
+const HELP = `pi-fleet manages pi agent teams through Herdr.
 
 Usage:
   pi-fleet [--root PATH] [--json] init [--no-ui]
@@ -20,8 +20,7 @@ Usage:
 
 Dispatch options:
   --role worker|verifier|lead  Default: worker
-  --kind KIND                  Herdr agent kind. Default: pi
-  --name NAME                  Agent name
+  --name NAME                  Pi agent name
   --cwd PATH                   Agent working directory
   --prompt TEXT                Custom prompt. Supports {task}, {role}, and {team}
 `;
@@ -87,7 +86,6 @@ export async function run(argv) {
       team: { type: "string" },
       task: { type: "string" },
       role: { type: "string", default: "worker" },
-      kind: { type: "string", default: "pi" },
       name: { type: "string" },
       cwd: { type: "string" },
       prompt: { type: "string" },

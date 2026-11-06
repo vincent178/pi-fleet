@@ -151,7 +151,7 @@ export class Fleet {
   }
 
   async reserveAssignment(options) {
-    const { team, role, name, taskCard, cwd, kind, prompt } = options;
+    const { team, role, name, taskCard, cwd, prompt } = options;
     const timestamp = now();
     return this.store.update((registry) => {
       const teamRecord = registry.teams.find((item) => item.name === team);
@@ -196,7 +196,7 @@ export class Fleet {
           status: "open",
           workspaceId: null,
           tabId: null,
-          checkPaneId: null,
+          commandPaneId: null,
           ownsTab: false,
           createdAt: timestamp,
         };
@@ -209,7 +209,6 @@ export class Fleet {
         name,
         team,
         role,
-        kind,
         taskId,
         taskCard,
         prompt,
@@ -231,7 +230,6 @@ export class Fleet {
 
   async dispatch(options) {
     const role = options.role ?? "worker";
-    const kind = options.kind ?? "pi";
     if (!ROLES.has(role)) throw usageError("The role must be worker, verifier, or lead.");
     if (!options.team) throw usageError("Dispatch requires --team.");
     if (role !== "lead" && !options.task) throw usageError("Worker and verifier dispatch require --task.");
@@ -252,7 +250,6 @@ export class Fleet {
     const reserved = await this.reserveAssignment({
       ...options,
       role,
-      kind,
       name,
       cwd,
       taskCard,
@@ -308,15 +305,15 @@ export class Fleet {
             paneId: pane.pane_id,
           });
         });
-        if (role === "verifier" && !current.checkPaneId) {
-          const checks = await this.herdr.splitPane({ paneId: pane.pane_id, direction: "down", cwd });
-          await this.herdr.renamePane(checks.pane_id, "commands");
+        if (role === "verifier" && !current.commandPaneId) {
+          const commandPane = await this.herdr.splitPane({ paneId: pane.pane_id, direction: "down", cwd });
+          await this.herdr.renamePane(commandPane.pane_id, "commands");
           await this.store.update((registry) => {
-            registry.tasks.find((item) => item.id === current.id).checkPaneId = checks.pane_id;
+            registry.tasks.find((item) => item.id === current.id).commandPaneId = commandPane.pane_id;
           });
         }
       }
-      await this.herdr.startAgent({ name, kind, paneId: pane.pane_id });
+      await this.herdr.startAgent({ name, paneId: pane.pane_id });
       await this.herdr.promptAgent({ name, prompt });
       await this.store.update((registry) => {
         const assignment = registry.assignments.find((item) => item.id === assignmentId);

@@ -100,8 +100,8 @@ export class HerdrClient {
     return response.result.pane;
   }
 
-  async startAgent({ name, kind, paneId }) {
-    await this.run(["agent", "start", name, "--kind", kind, "--pane", paneId, "--timeout", "60000"], {
+  async startAgent({ name, paneId }) {
+    await this.run(["agent", "start", name, "--kind", "pi", "--pane", paneId, "--timeout", "60000"], {
       timeoutMs: 65_000,
     });
   }
@@ -127,10 +127,6 @@ export class HerdrClient {
 
   async closeTab(tabId) {
     await this.run(["tab", "close", tabId]);
-  }
-
-  async swapPanes(sourcePaneId, targetPaneId) {
-    await this.run(["pane", "swap", "--source-pane", sourcePaneId, "--target-pane", targetPaneId]);
   }
 
   async renamePane(paneId, label) {

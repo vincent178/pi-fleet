@@ -38,7 +38,6 @@ function toolArguments(params: Record<string, unknown>): string[] {
 		if (params.team) args.push("--team", String(params.team));
 		if (params.task) args.push("--task", String(params.task));
 		if (params.role) args.push("--role", String(params.role));
-		if (params.kind) args.push("--kind", String(params.kind));
 		if (params.name) args.push("--name", String(params.name));
 		if (params.cwd) args.push("--cwd", String(params.cwd));
 		if (params.prompt) args.push("--prompt", String(params.prompt));
@@ -94,7 +93,6 @@ export default function (pi: ExtensionAPI) {
 			name: Type.Optional(Type.String({ description: "Team name or agent name" })),
 			task: Type.Optional(Type.String({ description: "Task-card path" })),
 			role: Type.Optional(StringEnum(["worker", "verifier", "lead"] as const)),
-			kind: Type.Optional(Type.String({ description: "Herdr agent kind. Default: pi" })),
 			cwd: Type.Optional(Type.String({ description: "Agent working directory" })),
 			prompt: Type.Optional(Type.String({ description: "Custom agent prompt" })),
 			assignment: Type.Optional(Type.String({ description: "Assignment ID or agent name" })),
