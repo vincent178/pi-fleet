@@ -74,6 +74,23 @@ test("watcher subscribes and emits Herdr events", (t) => {
   assert.deepEqual(event, value);
 });
 
+test("watcher unwraps Herdr protocol event envelopes", (t) => {
+  const { watcher, sockets } = fixture(t);
+  let event;
+  watcher.on("event", (value) => {
+    event = value;
+  });
+  watcher.start();
+  const socket = sockets[0];
+  socket.open();
+  const value = {
+    id: "subscription-1",
+    event: { event: "pane_agent_status_changed", data: { pane_id: "w1:p1" } },
+  };
+  send(socket, value);
+  assert.deepEqual(event, value.event);
+});
+
 test("watcher reconnects and resubscribes after disconnect", async (t) => {
   const { watcher, sockets } = fixture(t);
   let ready = 0;

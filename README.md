@@ -16,8 +16,8 @@ Pi-fleet gives one pi coordinator control of that work. Use it to:
   verifier. The fleet summary shows active assignments and inactive states.
 - **Control capacity.** Team limits control the number of active workers.
   Assignment records prevent duplicate worker and verifier dispatches.
-- **Monitor agent states.** Inspect all assignments in one view. Wait for an
-  agent to settle or block.
+- **Monitor agent states.** Inspect all assignments in one view. The pi extension
+  sends assignment transitions to the coordinator without a blocking wait.
 - **Clean up safely.** Release closes only panes and tabs that pi-fleet created.
 
 Pi-fleet coordinates agents, not task outcomes. A settled assignment does not
@@ -79,6 +79,8 @@ pi-fleet dispatch --team team-a --task .pi/tasks/task-example.md
 ```
 
 Dispatch returns after prompt delivery. It does not wait for the worker.
+The pi extension watches the new assignment in the background. It notifies the
+coordinator when the assignment requires attention.
 
 Inspect the fleet:
 
@@ -172,6 +174,31 @@ The `fleet` tool exposes these actions to the agent:
 - `release`
 - `reconcile`
 
+### Assignment notifications
+
+The extension watches every registered assignment pane during the session. New
+assignments join the watcher without an extension reload. Registry changes and
+Herdr events trigger serialized reconciliation. The extension uses no polling
+loop.
+
+Blocked, settled, missing, failed, and unknown transitions produce a coordinator
+message. Each message identifies the task card, assignment, role, and state
+change. `pi.sendMessage()` starts a turn when the coordinator is idle. Follow-up
+delivery queues the message behind active work.
+
+One coordinator can supervise several Over task loops through independent
+assignments. Fleet reports Herdr states only. The Over workflow owns independent
+verification, task completion, and task-card status.
+
+Registry event IDs and `delivery.json` suppress duplicate notifications after
+reconnects and ordinary reloads. Failed sends remain pending. The first watcher
+startup establishes a baseline, so existing history does not wake the
+coordinator. Session shutdown closes the socket and file watcher.
+
+Use `fleet wait` when a script or the next coordinator action has a synchronous
+dependency on an assignment state. The command keeps its blocking behavior.
+Background notifications remove the need to wait after every dispatch.
+
 ## Registry
 
 The default registry directory is `.pi/fleet`. Use `--root` or
@@ -180,11 +207,13 @@ The default registry directory is `.pi/fleet`. Use `--root` or
 ```text
 .pi/fleet/
 ├── registry.json
-└── events.jsonl
+├── events.jsonl
+└── delivery.json
 ```
 
 `registry.json` stores teams, tasks, assignments, and Herdr IDs. `events.jsonl`
-stores creation records and assignment state transitions.
+stores creation records and assignment state transitions with stable event IDs.
+`delivery.json` stores handled event IDs for coordinator notifications.
 
 Assignment states have these meanings:
 

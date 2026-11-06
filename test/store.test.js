@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
-import { RegistryStore } from "../src/store.js";
+import { RegistryStore, registryEventId } from "../src/store.js";
 
 async function storeFixture(t) {
   const root = await mkdtemp(join(tmpdir(), "pi-fleet-store-"));
@@ -50,4 +50,9 @@ test("assignment transitions append JSONL events", async (t) => {
   assert.deepEqual(events.map((event) => event.type), ["assignment.created", "assignment.changed"]);
   assert.equal(events[1].from, "pending");
   assert.equal(events[1].to, "dispatched");
+  assert.equal(new Set(events.map((event) => event.id)).size, events.length);
+  for (const event of events) assert.match(event.id, /^evt_[a-f0-9]{32}$/);
+  const legacy = { timestamp: "2026-01-01T00:00:00.000Z", type: "team.created", team: "team-a" };
+  assert.equal(registryEventId(legacy), registryEventId({ ...legacy }));
+  assert.match(registryEventId(legacy), /^legacy_[a-f0-9]{64}$/);
 });

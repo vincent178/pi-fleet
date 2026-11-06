@@ -56,8 +56,24 @@ Use `pi-fleet status` for a fleet summary. Use `pi-fleet status --team team-a`
 for one team. The watching summary reconciles existing assignments through
 Herdr events. It uses a 30-second poll as a fallback.
 
-Use `pi-fleet wait --assignment <id>` to wait for a settled or blocked agent.
-Use `--until blocked` to wait only for blockage.
+The pi extension watches all registered assignment panes in the background. New
+assignments join the watcher without an extension reload. Blocked, settled,
+missing, failed, and unknown transitions send a follow-up message to the
+coordinator. The message identifies the task card, assignment, role, and state.
+It starts a turn when the coordinator is idle. It queues behind active work.
+
+One coordinator can supervise several Over task loops through independent
+assignments. Fleet reports Herdr states only. The Over workflow owns independent
+verification, task completion, and task-card status.
+
+Do not call `fleet wait` after every dispatch. Continue other work or respond to
+the user. Use `pi-fleet wait --assignment <id>` for scripts or explicit
+synchronous dependencies. Use `--until blocked` to wait only for blockage. This
+command retains its blocking behavior.
+
+Persistent delivery state suppresses duplicate notifications after reconnects
+and ordinary reloads. Failed sends remain pending. Session shutdown closes the
+socket and file watcher.
 
 Herdr `idle` and `done` states become `settled` in the registry. These states
 do not prove task completion. Use task artifacts and independent verification

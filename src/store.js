@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { open, mkdir, readFile, rename, stat, unlink, appendFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -7,6 +7,17 @@ import { FleetError } from "./errors.js";
 const REGISTRY_VERSION = 1;
 const LOCK_TIMEOUT_MS = 10_000;
 const STALE_LOCK_MS = 30_000;
+const DELIVERY_VERSION = 1;
+
+export function registryEventId(event) {
+  if (event.id) return event.id;
+  const digest = createHash("sha256").update(JSON.stringify(event)).digest("hex");
+  return `legacy_${digest}`;
+}
+
+function newEventId() {
+  return `evt_${randomUUID().replaceAll("-", "")}`;
+}
 
 export function emptyRegistry() {
   const now = new Date().toISOString();
@@ -52,6 +63,7 @@ export class RegistryStore {
     this.root = root;
     this.registryPath = join(root, "registry.json");
     this.eventsPath = join(root, "events.jsonl");
+    this.deliveryPath = join(root, "delivery.json");
     this.lockPath = join(root, "registry.lock");
   }
 
@@ -153,12 +165,12 @@ export class RegistryStore {
     }
     for (const team of after.teams) {
       if (!before.teams.some((item) => item.name === team.name)) {
-        events.push({ timestamp, type: "team.created", team: team.name });
+        events.push({ id: newEventId(), timestamp, type: "team.created", team: team.name });
       }
     }
     for (const task of after.tasks) {
       if (!before.tasks.some((item) => item.id === task.id)) {
-        events.push({ timestamp, type: "task.created", taskId: task.id, taskCard: task.taskCard });
+        events.push({ id: newEventId(), timestamp, type: "task.created", taskId: task.id, taskCard: task.taskCard });
       }
     }
     if (events.length > 0) {
@@ -168,6 +180,7 @@ export class RegistryStore {
 
   event(type, assignment, from, to, timestamp) {
     return {
+      id: newEventId(),
       timestamp,
       type,
       assignmentId: assignment.id,
@@ -176,6 +189,62 @@ export class RegistryStore {
       from,
       to,
     };
+  }
+
+  async initializeDelivery() {
+    const lock = await this.acquireLock();
+    try {
+      if (await this.readDelivery()) return false;
+      const events = await this.readEvents();
+      await writeAtomic(this.deliveryPath, {
+        version: DELIVERY_VERSION,
+        handledEventIds: [...new Set(events.map(registryEventId))],
+      });
+      return true;
+    } finally {
+      await lock.close();
+      try {
+        await unlink(this.lockPath);
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+      }
+    }
+  }
+
+  async readDelivery() {
+    try {
+      const state = JSON.parse(await readFile(this.deliveryPath, "utf8"));
+      if (state.version !== DELIVERY_VERSION || !Array.isArray(state.handledEventIds)) {
+        throw new FleetError("The delivery state is not supported.", "delivery_invalid");
+      }
+      return state;
+    } catch (error) {
+      if (error.code === "ENOENT") return null;
+      if (error instanceof FleetError) throw error;
+      throw new FleetError("The delivery state is not valid JSON.", "delivery_invalid", { cause: error });
+    }
+  }
+
+  async markEventsHandled(eventIds) {
+    if (eventIds.length === 0) return;
+    const lock = await this.acquireLock();
+    try {
+      const current = (await this.readDelivery()) ?? { version: DELIVERY_VERSION, handledEventIds: [] };
+      const handledEventIds = new Set(current.handledEventIds);
+      for (const id of eventIds) handledEventIds.add(id);
+      if (handledEventIds.size === current.handledEventIds.length) return;
+      await writeAtomic(this.deliveryPath, {
+        version: DELIVERY_VERSION,
+        handledEventIds: [...handledEventIds],
+      });
+    } finally {
+      await lock.close();
+      try {
+        await unlink(this.lockPath);
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+      }
+    }
   }
 
   async readEvents() {
