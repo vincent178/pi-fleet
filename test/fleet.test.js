@@ -164,3 +164,17 @@ test("lead dispatch splits the fleet summary pane", async (t) => {
   const splits = herdr.calls.filter((call) => call.name === "splitPane");
   assert.equal(splits[1].value.paneId, registry.summary.paneId);
 });
+
+test("lead release preserves the coordinator and fleet summary", async (t) => {
+  const { fleet, herdr } = await fixture(t);
+  await fleet.init();
+  await fleet.createTeam({ name: "team-a" });
+  const lead = await fleet.dispatch({ team: "team-a", role: "lead" });
+  const summary = (await fleet.store.read()).summary;
+  herdr.agents.get(lead.name).agent_status = "done";
+  await fleet.release(lead.id);
+  assert.deepEqual(herdr.closedPanes, [lead.paneId]);
+  assert.deepEqual(herdr.closedTabs, []);
+  assert.ok(herdr.panes.has("w1:p0"));
+  assert.ok(herdr.panes.has(summary.paneId));
+});
