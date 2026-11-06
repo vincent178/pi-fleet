@@ -7,6 +7,14 @@ import { Fleet } from "../src/fleet.js";
 import { FleetError } from "../src/errors.js";
 import { FakeHerdr } from "./fake-herdr.js";
 
+function deferred() {
+  let resolve;
+  const promise = new Promise((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 async function fixture(t) {
   const cwd = await mkdtemp(join(tmpdir(), "pi-fleet-test-"));
   t.after(() => rm(cwd, { recursive: true, force: true }));
@@ -248,12 +256,16 @@ test("move reconciliation waits for an in-flight refresh", async (t) => {
   await fleet.createTeam({ name: "team-a", noUi: true });
   const assignment = await fleet.dispatch({ team: "team-a", task: taskCard });
   const staleAgent = { ...herdr.agents.get(assignment.name) };
+  const agentsStarted = deferred();
   let resolveAgents;
-  herdr.listAgents = () =>
-    new Promise((resolve) => {
+  herdr.listAgents = () => {
+    agentsStarted.resolve();
+    return new Promise((resolve) => {
       resolveAgents = () => resolve([staleAgent]);
     });
+  };
   const refreshing = fleet.refresh();
+  await agentsStarted.promise;
   const moving = fleet.reconcileEvent({
     event: "pane_moved",
     data: {
@@ -261,10 +273,6 @@ test("move reconciliation waits for an in-flight refresh", async (t) => {
       pane: { pane_id: "w1:p99", tab_id: "w1:t99", workspace_id: "w1" },
     },
   });
-  for (let attempt = 0; attempt < 20 && !resolveAgents; attempt += 1) {
-    await new Promise((resolve) => setImmediate(resolve));
-  }
-  assert.equal(typeof resolveAgents, "function");
   resolveAgents();
   await Promise.all([refreshing, moving]);
   assert.equal((await fleet.store.read()).assignments[0].paneId, "w1:p99");
@@ -276,16 +284,16 @@ test("refresh does not overwrite moves committed by another Fleet instance", asy
   const assignment = await fleet.dispatch({ team: "team-a", task: taskCard });
   const secondFleet = new Fleet({ cwd, root: ".fleet", herdr });
   const staleAgent = { ...herdr.agents.get(assignment.name) };
+  const agentsStarted = deferred();
   let resolveAgents;
-  herdr.listAgents = () =>
-    new Promise((resolve) => {
+  herdr.listAgents = () => {
+    agentsStarted.resolve();
+    return new Promise((resolve) => {
       resolveAgents = () => resolve([staleAgent]);
     });
+  };
   const refreshing = fleet.refresh();
-  for (let attempt = 0; attempt < 20 && !resolveAgents; attempt += 1) {
-    await new Promise((resolve) => setImmediate(resolve));
-  }
-  assert.equal(typeof resolveAgents, "function");
+  await agentsStarted.promise;
   const moving = secondFleet.reconcileEvent({
     event: "pane_moved",
     data: {
