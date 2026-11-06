@@ -199,8 +199,9 @@ This rule prevents duplicate workers and verifiers.
 Release requires a settled, failed, or released assignment. Use `--force` for
 an active assignment.
 
-The last assignment release closes the task tab. Earlier releases close only
-the assignment pane.
+Each assignment release closes its current pane. The last assignment release
+also closes the original Fleet-owned task tab when it still exists. A manual
+destination tab is not closed.
 
 Pi-fleet does not perform these operations:
 

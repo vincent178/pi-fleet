@@ -4,7 +4,7 @@ import { parseArgs } from "node:util";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Fleet } from "./fleet.js";
-import { HerdrEventWatcher, isAssignmentEvent } from "./herdr-events.js";
+import { HerdrEventWatcher, isAssignmentEvent, isRegisteredDiscovery } from "./herdr-events.js";
 import { extractGlobalOptions, positiveInteger } from "./args.js";
 import { renderSnapshot } from "./status.js";
 import { FleetError, messageOf } from "./errors.js";
@@ -106,14 +106,10 @@ async function watchStatus(fleet, team, json, interval) {
   };
   const scheduleEventRender = (event) => {
     if (event?.event === "pane_agent_detected" && !watchedPaneIds.has(event.data?.pane_id)) {
-      const paneId = event.data?.pane_id;
       void fleet.store
         .read()
         .then((registry) => {
-          const registered = registry.assignments.some(
-            (assignment) => assignment.paneId === paneId && !["failed", "released"].includes(assignment.status),
-          );
-          if (registered) queueEventRender();
+          if (isRegisteredDiscovery(registry, event, team)) queueEventRender();
         })
         .catch(stop);
       return;

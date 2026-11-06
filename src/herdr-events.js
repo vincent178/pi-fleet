@@ -2,6 +2,17 @@ import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { connect } from "node:net";
 
+export function isRegisteredDiscovery(registry, event, team) {
+  if (event.event !== "pane_agent_detected") return false;
+  const paneId = event.data?.pane_id;
+  return registry.assignments.some(
+    (assignment) =>
+      assignment.paneId === paneId &&
+      !["failed", "released"].includes(assignment.status) &&
+      (!team || assignment.team === team),
+  );
+}
+
 export function isAssignmentEvent(event, paneIds, tabIds) {
   const data = event.data ?? {};
   return Boolean(

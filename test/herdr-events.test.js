@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
-import { HerdrEventWatcher, isAssignmentEvent } from "../src/herdr-events.js";
+import { HerdrEventWatcher, isAssignmentEvent, isRegisteredDiscovery } from "../src/herdr-events.js";
 
 class FakeSocket extends EventEmitter {
   constructor() {
@@ -114,6 +114,21 @@ test("event filter accepts only registered assignment locations", () => {
   assert.equal(isAssignmentEvent({ event: "tab_closed", data: { tab_id: "w1:t1" } }, paneIds, tabIds), true);
   assert.equal(isAssignmentEvent({ event: "pane_moved", data: { previous_pane_id: "w1:p1" } }, paneIds, tabIds), true);
   assert.equal(isAssignmentEvent({ event: "pane_agent_detected", data: { pane_id: "w1:p2" } }, paneIds, tabIds), false);
+});
+
+test("agent discovery checks the requested team", () => {
+  const registry = {
+    assignments: [
+      { team: "team-a", paneId: "w1:p1", status: "pending" },
+      { team: "team-b", paneId: "w1:p2", status: "working" },
+      { team: "team-a", paneId: "w1:p3", status: "released" },
+    ],
+  };
+  const event = (paneId) => ({ event: "pane_agent_detected", data: { pane_id: paneId } });
+  assert.equal(isRegisteredDiscovery(registry, event("w1:p1"), "team-a"), true);
+  assert.equal(isRegisteredDiscovery(registry, event("w1:p2"), "team-a"), false);
+  assert.equal(isRegisteredDiscovery(registry, event("w1:p2"), undefined), true);
+  assert.equal(isRegisteredDiscovery(registry, event("w1:p3"), "team-a"), false);
 });
 
 test("stop prevents reconnection", async (t) => {

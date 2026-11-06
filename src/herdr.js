@@ -121,12 +121,20 @@ export class HerdrClient {
     return response.result.agents;
   }
 
-  async closePane(paneId) {
-    await this.run(["pane", "close", paneId]);
+  async closePane(paneId, { allowMissing = false } = {}) {
+    try {
+      await this.run(["pane", "close", paneId]);
+    } catch (error) {
+      if (!allowMissing || error.code !== "pane_not_found") throw error;
+    }
   }
 
-  async closeTab(tabId) {
-    await this.run(["tab", "close", tabId]);
+  async closeTab(tabId, { allowMissing = false } = {}) {
+    try {
+      await this.run(["tab", "close", tabId]);
+    } catch (error) {
+      if (!allowMissing || error.code !== "tab_not_found") throw error;
+    }
   }
 
   async renamePane(paneId, label) {

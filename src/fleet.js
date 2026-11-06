@@ -167,6 +167,7 @@ export class Fleet {
           tabId: null,
           commandPaneId: null,
           ownsTab: false,
+          ownedTabId: null,
           createdAt: timestamp,
         };
         registry.tasks.push(task);
@@ -263,6 +264,7 @@ export class Fleet {
               workspaceId,
               tabId: created.tab.tab_id,
               ownsTab: true,
+              ownedTabId: created.tab.tab_id,
             });
           });
         }
@@ -328,6 +330,7 @@ export class Fleet {
           if (assignment.role === "worker" && assignment.taskId) {
             const task = registry.tasks.find((item) => item.id === assignment.taskId);
             if (task) {
+              task.ownedTabId ??= task.tabId;
               task.workspaceId = assignment.workspaceId;
               task.tabId = assignment.tabId;
             }
@@ -366,10 +369,10 @@ export class Fleet {
       (item) => item.taskId === assignment.taskId && item.id !== assignment.id && item.status !== "released",
     );
     const task = assignment.taskId ? registry.tasks.find((item) => item.id === assignment.taskId) : null;
-    if (task && remaining.length === 0 && task.ownsTab && task.tabId) {
-      await this.herdr.closeTab(task.tabId);
-    } else if (assignment.paneId) {
-      await this.herdr.closePane(assignment.paneId);
+    if (assignment.paneId) await this.herdr.closePane(assignment.paneId, { allowMissing: true });
+    const ownedTabId = task?.ownedTabId ?? task?.tabId;
+    if (task && remaining.length === 0 && task.ownsTab && ownedTabId) {
+      await this.herdr.closeTab(ownedTabId, { allowMissing: true });
     }
     await this.store.update((current) => {
       const record = current.assignments.find((item) => item.id === assignment.id);

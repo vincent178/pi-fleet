@@ -106,6 +106,46 @@ test("refresh follows an assignment moved to another pane", async (t) => {
   assert.equal(snapshot.assignments[0].paneId, "w1:p99");
   assert.equal(snapshot.assignments[0].tabId, "w1:t99");
   assert.equal(snapshot.tasks[0].tabId, "w1:t99");
+  assert.equal(snapshot.tasks[0].ownedTabId, assignment.tabId);
+});
+
+test("release closes the moved worker pane and the owned task tab", async (t) => {
+  const { fleet, herdr, taskCard } = await fixture(t);
+  await fleet.createTeam({ name: "team-a", noUi: true });
+  const assignment = await fleet.dispatch({ team: "team-a", task: taskCard });
+  const ownedTabId = assignment.tabId;
+  herdr.panes.set("w1:p99", { pane_id: "w1:p99", tab_id: "w1:t99", workspace_id: "w1" });
+  Object.assign(herdr.agents.get(assignment.name), {
+    agent_status: "done",
+    pane_id: "w1:p99",
+    tab_id: "w1:t99",
+    workspace_id: "w1",
+  });
+  await fleet.status();
+  await fleet.release(assignment.id);
+  assert.deepEqual(herdr.closedPanes, ["w1:p99"]);
+  assert.deepEqual(herdr.closedTabs, [ownedTabId]);
+});
+
+test("release closes a verifier moved outside the owned task tab", async (t) => {
+  const { fleet, herdr, taskCard } = await fixture(t);
+  await fleet.createTeam({ name: "team-a", noUi: true });
+  const worker = await fleet.dispatch({ team: "team-a", task: taskCard });
+  const verifier = await fleet.dispatch({ team: "team-a", task: taskCard, role: "verifier" });
+  const ownedTabId = (await fleet.store.read()).tasks[0].ownedTabId;
+  herdr.panes.set("w1:p99", { pane_id: "w1:p99", tab_id: "w1:t99", workspace_id: "w1" });
+  Object.assign(herdr.agents.get(worker.name), { agent_status: "done" });
+  Object.assign(herdr.agents.get(verifier.name), {
+    agent_status: "done",
+    pane_id: "w1:p99",
+    tab_id: "w1:t99",
+    workspace_id: "w1",
+  });
+  await fleet.status();
+  await fleet.release(worker.id);
+  await fleet.release(verifier.id);
+  assert.deepEqual(herdr.closedPanes, [worker.paneId, "w1:p99"]);
+  assert.deepEqual(herdr.closedTabs, [ownedTabId]);
 });
 
 test("settled assignments resume when Herdr reports work", async (t) => {
