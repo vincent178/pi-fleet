@@ -303,11 +303,12 @@ export class Fleet {
     return (await this.store.read()).assignments.find((assignment) => assignment.id === assignmentId);
   }
 
-  async refresh() {
+  async refresh(team) {
     const agents = await this.herdr.listAgents();
     const byName = new Map(agents.filter((agent) => agent.name).map((agent) => [agent.name, agent]));
     await this.store.update((registry) => {
       for (const assignment of registry.assignments) {
+        if (team && assignment.team !== team) continue;
         const tracked = ACTIVE.has(assignment.status) || assignment.status === "settled";
         if (!tracked || assignment.status === "pending") continue;
         const agent = byName.get(assignment.name);
@@ -344,8 +345,46 @@ export class Fleet {
     });
   }
 
+  async reconcileEvent(event, team) {
+    if (event.event !== "pane_moved") return false;
+    const data = event.data ?? {};
+    if (!data.previous_pane_id || !data.pane) return false;
+    return this.store.update((registry) => {
+      let matched = false;
+      for (const assignment of registry.assignments) {
+        if (
+          assignment.paneId !== data.previous_pane_id ||
+          ["failed", "released"].includes(assignment.status) ||
+          (team && assignment.team !== team)
+        ) {
+          continue;
+        }
+        assignment.workspaceId = data.pane.workspace_id;
+        assignment.tabId = data.pane.tab_id;
+        assignment.paneId = data.pane.pane_id;
+        assignment.updatedAt = now();
+        matched = true;
+        if (assignment.role === "worker" && assignment.taskId) {
+          const task = registry.tasks.find((item) => item.id === assignment.taskId);
+          if (task) {
+            task.ownedTabId ??= task.tabId;
+            task.workspaceId = assignment.workspaceId;
+            task.tabId = assignment.tabId;
+          }
+        }
+      }
+      for (const task of registry.tasks) {
+        if (task.commandPaneId === data.previous_pane_id && (!team || task.team === team)) {
+          task.commandPaneId = data.pane.pane_id;
+          matched = true;
+        }
+      }
+      return matched;
+    });
+  }
+
   async status({ team, refresh = true } = {}) {
-    if (refresh) await this.refresh();
+    if (refresh) await this.refresh(team);
     const registry = await this.store.read();
     if (team && !registry.teams.some((item) => item.name === team)) {
       throw new FleetError(`Team not found: ${team}`, "team_not_found");
@@ -370,6 +409,9 @@ export class Fleet {
     );
     const task = assignment.taskId ? registry.tasks.find((item) => item.id === assignment.taskId) : null;
     if (assignment.paneId) await this.herdr.closePane(assignment.paneId, { allowMissing: true });
+    if (task && remaining.length === 0 && task.commandPaneId) {
+      await this.herdr.closePane(task.commandPaneId, { allowMissing: true });
+    }
     const ownedTabId = task?.ownedTabId ?? task?.tabId;
     if (task && remaining.length === 0 && task.ownsTab && ownedTabId) {
       await this.herdr.closeTab(ownedTabId, { allowMissing: true });

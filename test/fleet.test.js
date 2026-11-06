@@ -132,7 +132,9 @@ test("release closes a verifier moved outside the owned task tab", async (t) => 
   await fleet.createTeam({ name: "team-a", noUi: true });
   const worker = await fleet.dispatch({ team: "team-a", task: taskCard });
   const verifier = await fleet.dispatch({ team: "team-a", task: taskCard, role: "verifier" });
-  const ownedTabId = (await fleet.store.read()).tasks[0].ownedTabId;
+  const task = (await fleet.store.read()).tasks[0];
+  const ownedTabId = task.ownedTabId;
+  const commandPaneId = task.commandPaneId;
   herdr.panes.set("w1:p99", { pane_id: "w1:p99", tab_id: "w1:t99", workspace_id: "w1" });
   Object.assign(herdr.agents.get(worker.name), { agent_status: "done" });
   Object.assign(herdr.agents.get(verifier.name), {
@@ -144,8 +146,63 @@ test("release closes a verifier moved outside the owned task tab", async (t) => 
   await fleet.status();
   await fleet.release(worker.id);
   await fleet.release(verifier.id);
-  assert.deepEqual(herdr.closedPanes, [worker.paneId, "w1:p99"]);
+  assert.deepEqual(herdr.closedPanes, [worker.paneId, "w1:p99", commandPaneId]);
   assert.deepEqual(herdr.closedTabs, [ownedTabId]);
+});
+
+test("move events reconcile exited agents and command panes before release", async (t) => {
+  const { fleet, herdr, taskCard } = await fixture(t);
+  await fleet.createTeam({ name: "team-a", noUi: true });
+  const worker = await fleet.dispatch({ team: "team-a", task: taskCard });
+  const verifier = await fleet.dispatch({ team: "team-a", task: taskCard, role: "verifier" });
+  const task = (await fleet.store.read()).tasks[0];
+  herdr.agents.get(worker.name).agent_status = "done";
+  herdr.agents.get(verifier.name).agent_status = "done";
+  await fleet.status();
+  herdr.agents.clear();
+  const verifierMove = {
+    event: "pane_moved",
+    data: {
+      previous_pane_id: verifier.paneId,
+      pane: { pane_id: "w1:p99", tab_id: "w1:t99", workspace_id: "w1" },
+    },
+  };
+  assert.equal(await fleet.reconcileEvent(verifierMove, "team-b"), false);
+  assert.equal(await fleet.reconcileEvent(verifierMove, "team-a"), true);
+  assert.equal(
+    await fleet.reconcileEvent(
+      {
+        event: "pane_moved",
+        data: {
+          previous_pane_id: task.commandPaneId,
+          pane: { pane_id: "w1:p100", tab_id: "w1:t100", workspace_id: "w1" },
+        },
+      },
+      "team-a",
+    ),
+    true,
+  );
+  await fleet.release(worker.id);
+  await fleet.release(verifier.id);
+  assert.deepEqual(herdr.closedPanes, [worker.paneId, "w1:p99", "w1:p100"]);
+  assert.deepEqual(herdr.closedTabs, [task.ownedTabId]);
+});
+
+test("team status refresh ignores assignments from other teams", async (t) => {
+  const { fleet, herdr, taskCard } = await fixture(t);
+  await fleet.createTeam({ name: "team-a", noUi: true });
+  await fleet.createTeam({ name: "team-b", noUi: true });
+  const first = await fleet.dispatch({ team: "team-a", task: taskCard });
+  const second = await fleet.dispatch({ team: "team-b", task: taskCard });
+  herdr.agents.get(first.name).agent_status = "done";
+  herdr.agents.get(second.name).agent_status = "done";
+  await fleet.status({ team: "team-a" });
+  let assignments = (await fleet.store.read()).assignments;
+  assert.equal(assignments.find((item) => item.id === first.id).status, "settled");
+  assert.equal(assignments.find((item) => item.id === second.id).status, "dispatched");
+  await fleet.status({ team: "team-b" });
+  assignments = (await fleet.store.read()).assignments;
+  assert.equal(assignments.find((item) => item.id === second.id).status, "settled");
 });
 
 test("settled assignments resume when Herdr reports work", async (t) => {

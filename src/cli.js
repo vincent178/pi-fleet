@@ -105,6 +105,15 @@ async function watchStatus(fleet, team, json, interval) {
     }, 100);
   };
   const scheduleEventRender = (event) => {
+    if (event?.event === "pane_moved") {
+      void fleet
+        .reconcileEvent(event, team)
+        .then((reconciled) => {
+          if (reconciled) queueEventRender();
+        })
+        .catch(stop);
+      return;
+    }
     if (event?.event === "pane_agent_detected" && !watchedPaneIds.has(event.data?.pane_id)) {
       void fleet.store
         .read()
