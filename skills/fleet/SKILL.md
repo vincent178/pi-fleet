@@ -56,8 +56,39 @@ Use `pi-fleet status` for a fleet summary. Use `pi-fleet status --team team-a`
 for one team. The watching summary reconciles existing assignments through
 Herdr events. It uses a 30-second poll as a fallback.
 
-Use `pi-fleet wait --assignment <id>` to wait for a settled or blocked agent.
-Use `--until blocked` to wait only for blockage.
+The pi extension watches all registered assignment panes in the background. New
+assignments join the watcher without an extension reload. Blocked, settled,
+missing, failed, and unknown transitions send a follow-up message to the
+coordinator. The message identifies the task card, assignment, role, and state.
+It starts a turn when the coordinator is idle. It queues behind active work.
+
+One coordinator can supervise several Over task loops through independent
+assignments. Fleet reports Herdr states only. The Over workflow owns independent
+verification, task completion, and task-card status.
+
+Do not call `fleet wait` after every dispatch. Continue other work or respond to
+the user. Use `pi-fleet wait --assignment <id>` for scripts or explicit
+synchronous dependencies. Use `--until blocked` to wait only for blockage. This
+command retains its blocking behavior.
+
+Fleet uses explicit at-least-once delivery. A successful send precedes the
+`delivery.json` record. An explicit send failure leaves the event pending. A
+fresh coordinator runtime retries pending events. Handled event IDs prevent
+resends after reconnects and completed reloads.
+
+A failure can occur after a send but before persistence. A fresh runtime may
+then duplicate the message. Pi `sendMessage()` has no idempotency key. Use
+task-card state and Evidence for idempotent handling. Fleet does not claim
+exactly-once delivery. Internal Fleet event messages use `display: false`.
+
+One registry has one active assignment coordinator. Exclusive creation of
+`coordinator.json` acquires the lease. Renewal keeps the lease active. A second
+runtime cannot watch or deliver while that lease is active. Expiry permits
+recovery after a crash. Every delivery checks ownership first.
+
+The first watcher startup establishes a baseline. Existing history does not
+wake the coordinator. Session shutdown closes watchers, stops renewal, and
+releases the lease.
 
 Herdr `idle` and `done` states become `settled` in the registry. These states
 do not prove task completion. Use task artifacts and independent verification

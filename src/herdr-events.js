@@ -145,7 +145,9 @@ export class HerdrEventWatcher extends EventEmitter {
       this.emit("ready");
       return;
     }
-    if (message.event) this.emit("event", message);
+    if (message.event) {
+      this.emit("event", typeof message.event === "string" ? message : message.event);
+    }
   }
 
   isCurrent(socket, generation) {

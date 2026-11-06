@@ -1,12 +1,26 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { open, mkdir, readFile, rename, stat, unlink, appendFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { FleetError } from "./errors.js";
 
 const REGISTRY_VERSION = 1;
+const REGISTRY_LOCK_VERSION = 1;
 const LOCK_TIMEOUT_MS = 10_000;
 const STALE_LOCK_MS = 30_000;
+const DELIVERY_VERSION = 1;
+const COORDINATOR_LEASE_VERSION = 1;
+const DEFAULT_COORDINATOR_LEASE_MS = 10_000;
+
+export function registryEventId(event) {
+  if (event.id) return event.id;
+  const digest = createHash("sha256").update(JSON.stringify(event)).digest("hex");
+  return `legacy_${digest}`;
+}
+
+function newEventId() {
+  return `evt_${randomUUID().replaceAll("-", "")}`;
+}
 
 export function emptyRegistry() {
   const now = new Date().toISOString();
@@ -47,12 +61,63 @@ async function writeAtomic(path, value) {
   await rename(temporary, path);
 }
 
+function leaseRecord(lease) {
+  return { version: lease.version, ownerId: lease.ownerId, expiresAt: lease.expiresAt };
+}
+
+function processIsAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error.code === "ESRCH") return false;
+    if (error.code === "EPERM") return true;
+    throw error;
+  }
+}
+
+async function readLease(path) {
+  try {
+    const lease = JSON.parse(await readFile(path, "utf8"));
+    if (
+      lease.version !== COORDINATOR_LEASE_VERSION ||
+      typeof lease.ownerId !== "string" ||
+      !Number.isFinite(lease.expiresAt)
+    ) {
+      throw new FleetError("The coordinator lease is not supported.", "coordinator_lease_invalid");
+    }
+    return lease;
+  } catch (error) {
+    if (error.code === "ENOENT" || error instanceof FleetError) throw error;
+    throw new FleetError("The coordinator lease is not valid JSON.", "coordinator_lease_invalid", {
+      cause: error,
+    });
+  }
+}
+
 export class RegistryStore {
-  constructor(root) {
+  constructor(
+    root,
+    {
+      now = Date.now,
+      isProcessAlive = processIsAlive,
+      staleLockMs = STALE_LOCK_MS,
+      lockTimeoutMs = LOCK_TIMEOUT_MS,
+      lockRetryMs = 50,
+    } = {},
+  ) {
     this.root = root;
     this.registryPath = join(root, "registry.json");
     this.eventsPath = join(root, "events.jsonl");
+    this.deliveryPath = join(root, "delivery.json");
+    this.coordinatorLeasePath = join(root, "coordinator.json");
     this.lockPath = join(root, "registry.lock");
+    this.recoveryPath = join(root, "registry.lock.recovery");
+    this.now = now;
+    this.isProcessAlive = isProcessAlive;
+    this.staleLockMs = staleLockMs;
+    this.lockTimeoutMs = lockTimeoutMs;
+    this.lockRetryMs = lockRetryMs;
   }
 
   async init() {
@@ -91,29 +156,175 @@ export class RegistryStore {
     }
   }
 
+  newLockOwner() {
+    return {
+      version: REGISTRY_LOCK_VERSION,
+      pid: process.pid,
+      ownerToken: randomUUID(),
+      createdAt: new Date(this.now()).toISOString(),
+    };
+  }
+
+  async createLock(path) {
+    const owner = this.newLockOwner();
+    const handle = await open(path, "wx");
+    try {
+      await handle.writeFile(`${JSON.stringify(owner)}\n`, "utf8");
+      await handle.sync();
+    } catch (error) {
+      await handle.close();
+      await unlink(path).catch((unlinkError) => {
+        if (unlinkError.code !== "ENOENT") throw unlinkError;
+      });
+      throw error;
+    }
+    handle.ownerToken = owner.ownerToken;
+    return handle;
+  }
+
+  async readLockOwner(path) {
+    let source;
+    try {
+      source = await readFile(path, "utf8");
+    } catch (error) {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    }
+    try {
+      const owner = JSON.parse(source);
+      if (
+        owner.version !== REGISTRY_LOCK_VERSION ||
+        !Number.isSafeInteger(owner.pid) ||
+        owner.pid <= 0 ||
+        typeof owner.ownerToken !== "string" ||
+        owner.ownerToken.length === 0 ||
+        !Number.isFinite(Date.parse(owner.createdAt))
+      ) {
+        return null;
+      }
+      return owner;
+    } catch {
+      return null;
+    }
+  }
+
+  async shouldRecoverLock(path) {
+    const owner = await this.readLockOwner(path);
+    let createdAt = Date.parse(owner?.createdAt);
+    if (!Number.isFinite(createdAt)) {
+      let details;
+      try {
+        details = await stat(path);
+      } catch (error) {
+        if (error.code === "ENOENT") return false;
+        throw error;
+      }
+      createdAt = details.mtimeMs;
+    }
+    if (this.now() - createdAt <= this.staleLockMs) return false;
+    if (!owner) return true;
+    return !(await this.isProcessAlive(owner.pid, owner));
+  }
+
+  async removeStaleLock(path) {
+    if (!(await this.shouldRecoverLock(path))) return false;
+    try {
+      await unlink(path);
+      return true;
+    } catch (error) {
+      if (error.code === "ENOENT") return false;
+      throw error;
+    }
+  }
+
+  async tryAcquireRecoveryGuard() {
+    try {
+      return await this.createLock(this.recoveryPath);
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+      await this.removeStaleLock(this.recoveryPath);
+      return null;
+    }
+  }
+
+  async acquireRecoveryGuard() {
+    const started = this.now();
+    while (true) {
+      const guard = await this.tryAcquireRecoveryGuard();
+      if (guard) return guard;
+      if (this.now() - started >= this.lockTimeoutMs) {
+        throw new FleetError("The registry lock did not become available.", "registry_lock_timeout");
+      }
+      await delay(this.lockRetryMs);
+    }
+  }
+
+  async releaseOwnedLock(path, lock) {
+    await lock.close();
+    const owner = await this.readLockOwner(path);
+    if (owner?.ownerToken !== lock.ownerToken) return false;
+    try {
+      await unlink(path);
+      return true;
+    } catch (error) {
+      if (error.code === "ENOENT") return false;
+      throw error;
+    }
+  }
+
+  async recoverStaleRegistryLock() {
+    const guard = await this.tryAcquireRecoveryGuard();
+    if (!guard) return false;
+    try {
+      return await this.removeStaleLock(this.lockPath);
+    } finally {
+      await this.releaseOwnedLock(this.recoveryPath, guard);
+    }
+  }
+
   async acquireLock() {
-    const started = Date.now();
+    const started = this.now();
     await mkdir(this.root, { recursive: true });
     while (true) {
       try {
-        return await open(this.lockPath, "wx");
+        return await this.createLock(this.lockPath);
       } catch (error) {
         if (error.code !== "EEXIST") throw error;
-        try {
-          const details = await stat(this.lockPath);
-          if (Date.now() - details.mtimeMs > STALE_LOCK_MS) {
-            await unlink(this.lockPath);
-            continue;
-          }
-        } catch (statError) {
-          if (statError.code === "ENOENT") continue;
-          throw statError;
+        if (await this.shouldRecoverLock(this.lockPath)) {
+          if (await this.recoverStaleRegistryLock()) continue;
         }
-        if (Date.now() - started >= LOCK_TIMEOUT_MS) {
+        if (this.now() - started >= this.lockTimeoutMs) {
           throw new FleetError("The registry lock did not become available.", "registry_lock_timeout");
         }
-        await delay(50);
+        await delay(this.lockRetryMs);
       }
+    }
+  }
+
+  async releaseLock(lock) {
+    await lock.close();
+    const guard = await this.acquireRecoveryGuard();
+    try {
+      const owner = await this.readLockOwner(this.lockPath);
+      if (owner?.ownerToken !== lock.ownerToken) return false;
+      try {
+        await unlink(this.lockPath);
+        return true;
+      } catch (error) {
+        if (error.code === "ENOENT") return false;
+        throw error;
+      }
+    } finally {
+      await this.releaseOwnedLock(this.recoveryPath, guard);
+    }
+  }
+
+  async withLock(operation) {
+    const lock = await this.acquireLock();
+    try {
+      return await operation();
+    } finally {
+      await this.releaseLock(lock);
     }
   }
 
@@ -129,12 +340,7 @@ export class RegistryStore {
       await this.appendTransitions(before, after);
       return result;
     } finally {
-      await lock.close();
-      try {
-        await unlink(this.lockPath);
-      } catch (error) {
-        if (error.code !== "ENOENT") throw error;
-      }
+      await this.releaseLock(lock);
     }
   }
 
@@ -153,12 +359,12 @@ export class RegistryStore {
     }
     for (const team of after.teams) {
       if (!before.teams.some((item) => item.name === team.name)) {
-        events.push({ timestamp, type: "team.created", team: team.name });
+        events.push({ id: newEventId(), timestamp, type: "team.created", team: team.name });
       }
     }
     for (const task of after.tasks) {
       if (!before.tasks.some((item) => item.id === task.id)) {
-        events.push({ timestamp, type: "task.created", taskId: task.id, taskCard: task.taskCard });
+        events.push({ id: newEventId(), timestamp, type: "task.created", taskId: task.id, taskCard: task.taskCard });
       }
     }
     if (events.length > 0) {
@@ -168,6 +374,7 @@ export class RegistryStore {
 
   event(type, assignment, from, to, timestamp) {
     return {
+      id: newEventId(),
       timestamp,
       type,
       assignmentId: assignment.id,
@@ -176,6 +383,162 @@ export class RegistryStore {
       from,
       to,
     };
+  }
+
+  async initializeDelivery() {
+    const lock = await this.acquireLock();
+    try {
+      if (await this.readDelivery()) return false;
+      const events = await this.readEvents();
+      await writeAtomic(this.deliveryPath, {
+        version: DELIVERY_VERSION,
+        handledEventIds: [...new Set(events.map(registryEventId))],
+      });
+      return true;
+    } finally {
+      await this.releaseLock(lock);
+    }
+  }
+
+  async readDelivery() {
+    try {
+      const state = JSON.parse(await readFile(this.deliveryPath, "utf8"));
+      if (state.version !== DELIVERY_VERSION || !Array.isArray(state.handledEventIds)) {
+        throw new FleetError("The delivery state is not supported.", "delivery_invalid");
+      }
+      return state;
+    } catch (error) {
+      if (error.code === "ENOENT") return null;
+      if (error instanceof FleetError) throw error;
+      throw new FleetError("The delivery state is not valid JSON.", "delivery_invalid", { cause: error });
+    }
+  }
+
+  async markEventsHandled(eventIds) {
+    if (eventIds.length === 0) return;
+    const lock = await this.acquireLock();
+    try {
+      const current = (await this.readDelivery()) ?? { version: DELIVERY_VERSION, handledEventIds: [] };
+      const handledEventIds = new Set(current.handledEventIds);
+      for (const id of eventIds) handledEventIds.add(id);
+      if (handledEventIds.size === current.handledEventIds.length) return;
+      await writeAtomic(this.deliveryPath, {
+        version: DELIVERY_VERSION,
+        handledEventIds: [...handledEventIds],
+      });
+    } finally {
+      await this.releaseLock(lock);
+    }
+  }
+
+  async acquireCoordinatorLease({ leaseMs = DEFAULT_COORDINATOR_LEASE_MS } = {}) {
+    await mkdir(this.root, { recursive: true });
+    return this.withLock(async () => {
+      if (!(await this.recoverStaleCoordinatorLeaseUnlocked(leaseMs))) return null;
+      const lease = {
+        version: COORDINATOR_LEASE_VERSION,
+        ownerId: randomUUID(),
+        expiresAt: this.now() + leaseMs,
+        handle: null,
+      };
+      await writeAtomic(this.coordinatorLeasePath, leaseRecord(lease));
+      lease.handle = await open(this.coordinatorLeasePath, "r");
+      return lease;
+    });
+  }
+
+  async recoverStaleCoordinatorLease(leaseMs) {
+    return this.withLock(() => this.recoverStaleCoordinatorLeaseUnlocked(leaseMs));
+  }
+
+  async recoverStaleCoordinatorLeaseUnlocked(leaseMs) {
+    const now = this.now();
+    let observed;
+    try {
+      observed = await this.readCoordinatorLease();
+    } catch (error) {
+      if (error.code !== "coordinator_lease_invalid") throw error;
+    }
+    if (observed && observed.expiresAt > now) return false;
+    if (!observed) {
+      let details;
+      try {
+        details = await stat(this.coordinatorLeasePath);
+      } catch (error) {
+        if (error.code === "ENOENT") return true;
+        throw error;
+      }
+      if (now - details.mtimeMs <= leaseMs) return false;
+    }
+
+    try {
+      await unlink(this.coordinatorLeasePath);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    return true;
+  }
+
+  async renewCoordinatorLease(lease, leaseMs = DEFAULT_COORDINATOR_LEASE_MS) {
+    return this.withLock(async () => {
+      if (!(await this.ownsCoordinatorLeaseUnlocked(lease))) return false;
+      const expiresAt = this.now() + leaseMs;
+      await writeAtomic(this.coordinatorLeasePath, leaseRecord({ ...lease, expiresAt }));
+      lease.expiresAt = expiresAt;
+      return true;
+    });
+  }
+
+  async ownsCoordinatorLeaseUnlocked(lease) {
+    if (!lease?.handle) return false;
+    try {
+      await lease.handle.stat();
+      const current = await this.readCoordinatorLease();
+      return current?.ownerId === lease.ownerId;
+    } catch (error) {
+      if (error.code === "ENOENT" || error.code === "EBADF") return false;
+      throw error;
+    }
+  }
+
+  async ownsCoordinatorLease(lease) {
+    return this.withLock(() => this.ownsCoordinatorLeaseUnlocked(lease));
+  }
+
+  async runWithCoordinatorLease(lease, operation) {
+    return this.withLock(async () => {
+      if (!(await this.ownsCoordinatorLeaseUnlocked(lease))) return false;
+      return (await operation()) !== false;
+    });
+  }
+
+  async releaseCoordinatorLease(lease) {
+    if (!lease?.handle) return false;
+    return this.withLock(async () => {
+      try {
+        if (!(await this.ownsCoordinatorLeaseUnlocked(lease))) return false;
+        try {
+          await unlink(this.coordinatorLeasePath);
+        } catch (error) {
+          if (error.code === "ENOENT") return false;
+          throw error;
+        }
+        return true;
+      } finally {
+        await lease.handle.close().catch((error) => {
+          if (error.code !== "EBADF") throw error;
+        });
+      }
+    });
+  }
+
+  async readCoordinatorLease() {
+    try {
+      return await readLease(this.coordinatorLeasePath);
+    } catch (error) {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    }
   }
 
   async readEvents() {
