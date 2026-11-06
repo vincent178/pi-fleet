@@ -80,7 +80,7 @@ export class Fleet {
     return makeSnapshot(await this.store.read());
   }
 
-  async createTeam({ name, workerLimit = 5, noUi = false }) {
+  async createTeam({ name, workerLimit = 5 }) {
     if (!TEAM_NAME.test(name)) {
       throw usageError("Team names require lowercase letters, numbers, and hyphens. The maximum length is 23.");
     }
@@ -95,7 +95,7 @@ export class Fleet {
       registry.teams.push({
         name,
         workerLimit,
-        status: "creating",
+        status: "active",
         workspaceId: null,
         tabId: null,
         summaryPaneId: null,
@@ -104,37 +104,6 @@ export class Fleet {
         error: null,
       });
     });
-    try {
-      if (!noUi) {
-        const workspaceId = await this.herdr.workspaceId();
-        const created = await this.herdr.createTab({
-          workspaceId,
-          cwd: this.cwd,
-          label: `team:${name}`,
-        });
-        await this.store.update((registry) => {
-          const team = registry.teams.find((item) => item.name === name);
-          team.workspaceId = workspaceId;
-          team.tabId = created.tab.tab_id;
-          team.summaryPaneId = created.rootPane.pane_id;
-          team.ownsTab = true;
-          team.status = "active";
-        });
-        await this.herdr.renamePane(created.rootPane.pane_id, `team-${name}-summary`);
-        await this.herdr.runCommand(created.rootPane.pane_id, this.statusCommand(name));
-      } else {
-        await this.store.update((registry) => {
-          registry.teams.find((team) => team.name === name).status = "active";
-        });
-      }
-    } catch (error) {
-      await this.store.update((registry) => {
-        const team = registry.teams.find((item) => item.name === name);
-        team.status = "failed";
-        team.error = error.message;
-      });
-      throw error;
-    }
     return (await this.store.read()).teams.find((team) => team.name === name);
   }
 
@@ -247,6 +216,10 @@ export class Fleet {
     const prompt =
       options.prompt?.replaceAll("{task}", taskCard ?? "").replaceAll("{role}", role).replaceAll("{team}", options.team) ??
       this.defaultPrompt({ role, team: options.team, taskCard });
+    const leadSummary = role === "lead" ? (await this.store.read()).summary : null;
+    if (role === "lead" && !leadSummary?.paneId) {
+      throw new FleetError("The fleet has no summary pane. Run init without --no-ui.", "fleet_ui_missing");
+    }
     const reserved = await this.reserveAssignment({
       ...options,
       role,
@@ -259,11 +232,7 @@ export class Fleet {
     try {
       let pane;
       if (role === "lead") {
-        const team = (await this.store.read()).teams.find((item) => item.name === options.team);
-        if (!team.summaryPaneId) {
-          throw new FleetError("The team has no Herdr tab. Create the team without --no-ui.", "team_ui_missing");
-        }
-        pane = await this.herdr.splitPane({ paneId: team.summaryPaneId, cwd });
+        pane = await this.herdr.splitPane({ paneId: leadSummary.paneId, cwd });
         await this.store.update((registry) => {
           const assignment = registry.assignments.find((item) => item.id === assignmentId);
           Object.assign(assignment, {
