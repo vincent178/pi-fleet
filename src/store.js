@@ -5,6 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { FleetError } from "./errors.js";
 
 const REGISTRY_VERSION = 1;
+const REGISTRY_LOCK_VERSION = 1;
 const LOCK_TIMEOUT_MS = 10_000;
 const STALE_LOCK_MS = 30_000;
 const DELIVERY_VERSION = 1;
@@ -64,6 +65,17 @@ function leaseRecord(lease) {
   return { version: lease.version, ownerId: lease.ownerId, expiresAt: lease.expiresAt };
 }
 
+function processIsAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error.code === "ESRCH") return false;
+    if (error.code === "EPERM") return true;
+    throw error;
+  }
+}
+
 async function readLease(path) {
   try {
     const lease = JSON.parse(await readFile(path, "utf8"));
@@ -84,13 +96,28 @@ async function readLease(path) {
 }
 
 export class RegistryStore {
-  constructor(root) {
+  constructor(
+    root,
+    {
+      now = Date.now,
+      isProcessAlive = processIsAlive,
+      staleLockMs = STALE_LOCK_MS,
+      lockTimeoutMs = LOCK_TIMEOUT_MS,
+      lockRetryMs = 50,
+    } = {},
+  ) {
     this.root = root;
     this.registryPath = join(root, "registry.json");
     this.eventsPath = join(root, "events.jsonl");
     this.deliveryPath = join(root, "delivery.json");
     this.coordinatorLeasePath = join(root, "coordinator.json");
     this.lockPath = join(root, "registry.lock");
+    this.recoveryPath = join(root, "registry.lock.recovery");
+    this.now = now;
+    this.isProcessAlive = isProcessAlive;
+    this.staleLockMs = staleLockMs;
+    this.lockTimeoutMs = lockTimeoutMs;
+    this.lockRetryMs = lockRetryMs;
   }
 
   async init() {
@@ -129,29 +156,166 @@ export class RegistryStore {
     }
   }
 
+  newLockOwner() {
+    return {
+      version: REGISTRY_LOCK_VERSION,
+      pid: process.pid,
+      ownerToken: randomUUID(),
+      createdAt: new Date(this.now()).toISOString(),
+    };
+  }
+
+  async createLock(path) {
+    const owner = this.newLockOwner();
+    const handle = await open(path, "wx");
+    try {
+      await handle.writeFile(`${JSON.stringify(owner)}\n`, "utf8");
+      await handle.sync();
+    } catch (error) {
+      await handle.close();
+      await unlink(path).catch((unlinkError) => {
+        if (unlinkError.code !== "ENOENT") throw unlinkError;
+      });
+      throw error;
+    }
+    handle.ownerToken = owner.ownerToken;
+    return handle;
+  }
+
+  async readLockOwner(path) {
+    let source;
+    try {
+      source = await readFile(path, "utf8");
+    } catch (error) {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    }
+    try {
+      const owner = JSON.parse(source);
+      if (
+        owner.version !== REGISTRY_LOCK_VERSION ||
+        !Number.isSafeInteger(owner.pid) ||
+        owner.pid <= 0 ||
+        typeof owner.ownerToken !== "string" ||
+        owner.ownerToken.length === 0 ||
+        !Number.isFinite(Date.parse(owner.createdAt))
+      ) {
+        return null;
+      }
+      return owner;
+    } catch {
+      return null;
+    }
+  }
+
+  async shouldRecoverLock(path) {
+    const owner = await this.readLockOwner(path);
+    let createdAt = Date.parse(owner?.createdAt);
+    if (!Number.isFinite(createdAt)) {
+      let details;
+      try {
+        details = await stat(path);
+      } catch (error) {
+        if (error.code === "ENOENT") return false;
+        throw error;
+      }
+      createdAt = details.mtimeMs;
+    }
+    if (this.now() - createdAt <= this.staleLockMs) return false;
+    if (!owner) return true;
+    return !(await this.isProcessAlive(owner.pid, owner));
+  }
+
+  async removeStaleLock(path) {
+    if (!(await this.shouldRecoverLock(path))) return false;
+    try {
+      await unlink(path);
+      return true;
+    } catch (error) {
+      if (error.code === "ENOENT") return false;
+      throw error;
+    }
+  }
+
+  async tryAcquireRecoveryGuard() {
+    try {
+      return await this.createLock(this.recoveryPath);
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+      await this.removeStaleLock(this.recoveryPath);
+      return null;
+    }
+  }
+
+  async acquireRecoveryGuard() {
+    const started = this.now();
+    while (true) {
+      const guard = await this.tryAcquireRecoveryGuard();
+      if (guard) return guard;
+      if (this.now() - started >= this.lockTimeoutMs) {
+        throw new FleetError("The registry lock did not become available.", "registry_lock_timeout");
+      }
+      await delay(this.lockRetryMs);
+    }
+  }
+
+  async releaseOwnedLock(path, lock) {
+    await lock.close();
+    const owner = await this.readLockOwner(path);
+    if (owner?.ownerToken !== lock.ownerToken) return false;
+    try {
+      await unlink(path);
+      return true;
+    } catch (error) {
+      if (error.code === "ENOENT") return false;
+      throw error;
+    }
+  }
+
+  async recoverStaleRegistryLock() {
+    const guard = await this.tryAcquireRecoveryGuard();
+    if (!guard) return false;
+    try {
+      return await this.removeStaleLock(this.lockPath);
+    } finally {
+      await this.releaseOwnedLock(this.recoveryPath, guard);
+    }
+  }
+
   async acquireLock() {
-    const started = Date.now();
+    const started = this.now();
     await mkdir(this.root, { recursive: true });
     while (true) {
       try {
-        return await open(this.lockPath, "wx");
+        return await this.createLock(this.lockPath);
       } catch (error) {
         if (error.code !== "EEXIST") throw error;
-        try {
-          const details = await stat(this.lockPath);
-          if (Date.now() - details.mtimeMs > STALE_LOCK_MS) {
-            await unlink(this.lockPath);
-            continue;
-          }
-        } catch (statError) {
-          if (statError.code === "ENOENT") continue;
-          throw statError;
+        if (await this.shouldRecoverLock(this.lockPath)) {
+          if (await this.recoverStaleRegistryLock()) continue;
         }
-        if (Date.now() - started >= LOCK_TIMEOUT_MS) {
+        if (this.now() - started >= this.lockTimeoutMs) {
           throw new FleetError("The registry lock did not become available.", "registry_lock_timeout");
         }
-        await delay(50);
+        await delay(this.lockRetryMs);
       }
+    }
+  }
+
+  async releaseLock(lock) {
+    await lock.close();
+    const guard = await this.acquireRecoveryGuard();
+    try {
+      const owner = await this.readLockOwner(this.lockPath);
+      if (owner?.ownerToken !== lock.ownerToken) return false;
+      try {
+        await unlink(this.lockPath);
+        return true;
+      } catch (error) {
+        if (error.code === "ENOENT") return false;
+        throw error;
+      }
+    } finally {
+      await this.releaseOwnedLock(this.recoveryPath, guard);
     }
   }
 
@@ -160,12 +324,7 @@ export class RegistryStore {
     try {
       return await operation();
     } finally {
-      await lock.close();
-      try {
-        await unlink(this.lockPath);
-      } catch (error) {
-        if (error.code !== "ENOENT") throw error;
-      }
+      await this.releaseLock(lock);
     }
   }
 
@@ -181,12 +340,7 @@ export class RegistryStore {
       await this.appendTransitions(before, after);
       return result;
     } finally {
-      await lock.close();
-      try {
-        await unlink(this.lockPath);
-      } catch (error) {
-        if (error.code !== "ENOENT") throw error;
-      }
+      await this.releaseLock(lock);
     }
   }
 
@@ -242,12 +396,7 @@ export class RegistryStore {
       });
       return true;
     } finally {
-      await lock.close();
-      try {
-        await unlink(this.lockPath);
-      } catch (error) {
-        if (error.code !== "ENOENT") throw error;
-      }
+      await this.releaseLock(lock);
     }
   }
 
@@ -278,12 +427,7 @@ export class RegistryStore {
         handledEventIds: [...handledEventIds],
       });
     } finally {
-      await lock.close();
-      try {
-        await unlink(this.lockPath);
-      } catch (error) {
-        if (error.code !== "ENOENT") throw error;
-      }
+      await this.releaseLock(lock);
     }
   }
 
@@ -294,7 +438,7 @@ export class RegistryStore {
       const lease = {
         version: COORDINATOR_LEASE_VERSION,
         ownerId: randomUUID(),
-        expiresAt: Date.now() + leaseMs,
+        expiresAt: this.now() + leaseMs,
         handle: null,
       };
       await writeAtomic(this.coordinatorLeasePath, leaseRecord(lease));
@@ -308,7 +452,7 @@ export class RegistryStore {
   }
 
   async recoverStaleCoordinatorLeaseUnlocked(leaseMs) {
-    const now = Date.now();
+    const now = this.now();
     let observed;
     try {
       observed = await this.readCoordinatorLease();
@@ -338,7 +482,7 @@ export class RegistryStore {
   async renewCoordinatorLease(lease, leaseMs = DEFAULT_COORDINATOR_LEASE_MS) {
     return this.withLock(async () => {
       if (!(await this.ownsCoordinatorLeaseUnlocked(lease))) return false;
-      const expiresAt = Date.now() + leaseMs;
+      const expiresAt = this.now() + leaseMs;
       await writeAtomic(this.coordinatorLeasePath, leaseRecord({ ...lease, expiresAt }));
       lease.expiresAt = expiresAt;
       return true;

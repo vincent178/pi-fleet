@@ -234,6 +234,13 @@ stores creation records and assignment state transitions with stable event IDs.
 `coordinator.json` stores the active coordinator lease and its expiry. Shutdown
 removes the lease file. Stale recovery removes it after a crash.
 
+`registry.lock` serializes registry writes and coordinator lease changes. The
+lock record contains the owner PID, a unique owner token, and the creation time.
+After 30 seconds, a contender checks the owner process. A live owner keeps the
+lock beyond that threshold. A dead owner permits stale recovery. Concurrent
+recovery uses a short guard to permit one replacement owner. Owner-token checks
+prevent an old owner from removing a replacement lock.
+
 Assignment states have these meanings:
 
 | State | Meaning |

@@ -8,6 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { AssignmentCoordinator } from "../src/coordinator.js";
 import { Fleet } from "../src/fleet.js";
 import { HerdrEventWatcher } from "../src/herdr-events.js";
+import { RegistryStore } from "../src/store.js";
 import { FakeHerdr } from "./fake-herdr.js";
 
 function deferred() {
@@ -121,6 +122,7 @@ async function fixture(t, options = {}) {
     });
   }
   const fleet = new Fleet({ cwd: root, root: join(root, "fleet"), herdr });
+  if (options.storeOptions) fleet.store = new RegistryStore(fleet.root, options.storeOptions);
   await fleet.store.init();
   await fleet.store.update((registry) => {
     const teamNames = new Set(assignments.map((item) => item.team));
@@ -485,6 +487,49 @@ test("an old owner cannot send after replacement delivery completes", async (t) 
   assert.equal(old.files[0].closed, true);
   await old.coordinator.stop();
   assert.equal(await old.fleet.store.ownsCoordinatorLease(replacement.coordinator.lease), true);
+});
+
+test("a live registry mutex blocks replacement delivery until a long send completes", async (t) => {
+  let offset = 0;
+  let oldSendCompleted = false;
+  const entered = deferred();
+  const resume = deferred();
+  const old = await fixture(t, {
+    storeOptions: {
+      now: () => Date.now() + offset,
+      isProcessAlive: () => true,
+      lockRetryMs: 5,
+    },
+    leaseDurationMs: 40,
+    leaseRenewMs: 60_000,
+    deliver: async () => {
+      entered.resolve();
+      await resume.promise;
+      oldSendCompleted = true;
+    },
+  });
+  await appendEvents(old.fleet, [changed("event-long-send", "a1", "blocked")]);
+  const draining = old.coordinator.requestReconciliation();
+  await entered.promise;
+  offset = 31_000;
+  const replacementDeliveries = [];
+  const starting = runtime(t, old, {
+    deliveries: replacementDeliveries,
+    warnings: [],
+    deliver: async () => {
+      assert.equal(oldSendCompleted, true);
+    },
+  });
+  await delay(30);
+  const replacementDeliveriesDuringSend = replacementDeliveries.length;
+  resume.resolve();
+  const [replacement] = await Promise.all([starting, draining]);
+  assert.equal(replacementDeliveriesDuringSend, 0);
+  assert.equal(oldSendCompleted, true);
+  assert.equal(replacement.started, true);
+  assert.deepEqual(old.deliveries.map(({ message }) => message.details.eventId), ["event-long-send"]);
+  await old.coordinator.stop();
+  assert.equal(await replacement.fleet.store.ownsCoordinatorLease(replacement.coordinator.lease), true);
 });
 
 test("orphaned events are recorded without blocking later valid events", async (t) => {
