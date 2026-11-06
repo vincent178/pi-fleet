@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 
 import { parseArgs } from "node:util";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { Fleet } from "./fleet.js";
+import { HerdrEventWatcher, isAssignmentEvent } from "./herdr-events.js";
 import { extractGlobalOptions, positiveInteger } from "./args.js";
 import { renderSnapshot } from "./status.js";
 import { FleetError, messageOf } from "./errors.js";
@@ -12,7 +15,7 @@ Usage:
   pi-fleet [--root PATH] [--json] init [--no-ui]
   pi-fleet [--root PATH] [--json] team create NAME [--limit N] [--no-ui]
   pi-fleet [--root PATH] [--json] dispatch --team NAME [--task PATH] [options]
-  pi-fleet [--root PATH] [--json] status [--team NAME] [--watch] [--no-refresh]
+  pi-fleet [--root PATH] [--json] status [--team NAME] [--watch] [--interval MS] [--no-refresh]
   pi-fleet [--root PATH] [--json] wait [--assignment ID|NAME] [--until settled|blocked] [--timeout MS]
   pi-fleet [--root PATH] [--json] release ID|NAME [--force]
   pi-fleet [--root PATH] [--json] reconcile
@@ -37,15 +40,96 @@ function print(value, json) {
 
 async function watchStatus(fleet, team, json, interval) {
   let stopped = false;
-  process.on("SIGINT", () => {
-    stopped = true;
+  let running = false;
+  let pending = false;
+  let timer;
+  let eventTimer;
+  let resolveStop;
+  let rejectStop;
+  const stoppedPromise = new Promise((resolve, reject) => {
+    resolveStop = resolve;
+    rejectStop = reject;
   });
-  while (!stopped) {
-    const snapshot = await fleet.status({ team });
-    if (!json) process.stdout.write("\x1b[H\x1b[2J");
-    print(json ? snapshot : renderSnapshot(snapshot), json);
-    await new Promise((resolve) => setTimeout(resolve, interval));
+  const watcher = new HerdrEventWatcher({
+    socketPath: process.env.HERDR_SOCKET_PATH ?? join(homedir(), ".config", "herdr", "herdr.sock"),
+  });
+  const watchedPaneIds = new Set();
+  const watchedTabIds = new Set();
+  const onSigint = () => stop();
+  const stop = (error) => {
+    if (stopped) return;
+    stopped = true;
+    clearInterval(timer);
+    clearTimeout(eventTimer);
+    watcher.stop();
+    process.removeListener("SIGINT", onSigint);
+    if (error) rejectStop(error);
+    else resolveStop();
+  };
+  const render = async () => {
+    if (stopped) return;
+    if (running) {
+      pending = true;
+      return;
+    }
+    running = true;
+    try {
+      do {
+        pending = false;
+        const snapshot = await fleet.status({ team });
+        if (stopped) return;
+        const tracked = snapshot.assignments.filter(
+          (assignment) => !["failed", "released"].includes(assignment.status),
+        );
+        watchedPaneIds.clear();
+        watchedTabIds.clear();
+        for (const assignment of tracked) {
+          if (assignment.paneId) watchedPaneIds.add(assignment.paneId);
+          if (assignment.tabId) watchedTabIds.add(assignment.tabId);
+        }
+        watcher.setPaneIds([...watchedPaneIds]);
+        if (!json) process.stdout.write("\x1b[H\x1b[2J");
+        print(json ? snapshot : renderSnapshot(snapshot), json);
+      } while (pending && !stopped);
+    } catch (error) {
+      stop(error);
+    } finally {
+      running = false;
+    }
+  };
+  const queueEventRender = () => {
+    if (eventTimer) return;
+    eventTimer = setTimeout(() => {
+      eventTimer = null;
+      void render();
+    }, 100);
+  };
+  const scheduleEventRender = (event) => {
+    if (event?.event === "pane_agent_detected" && !watchedPaneIds.has(event.data?.pane_id)) {
+      const paneId = event.data?.pane_id;
+      void fleet.store
+        .read()
+        .then((registry) => {
+          const registered = registry.assignments.some(
+            (assignment) => assignment.paneId === paneId && !["failed", "released"].includes(assignment.status),
+          );
+          if (registered) queueEventRender();
+        })
+        .catch(stop);
+      return;
+    }
+    if (event && !isAssignmentEvent(event, watchedPaneIds, watchedTabIds)) return;
+    queueEventRender();
+  };
+  process.once("SIGINT", onSigint);
+  watcher.on("ready", scheduleEventRender);
+  watcher.on("event", scheduleEventRender);
+  await render();
+  if (!stopped) {
+    watcher.start();
+    timer = setInterval(render, interval);
   }
+  await stoppedPromise;
 }
 
 export async function run(argv) {
@@ -100,7 +184,7 @@ export async function run(argv) {
     const { values, positionals } = options(args, {
       team: { type: "string" },
       watch: { type: "boolean", default: false },
-      interval: { type: "string", default: "2000" },
+      interval: { type: "string", default: "30000" },
       "no-refresh": { type: "boolean", default: false },
     });
     if (positionals.length > 0) throw new FleetError("status does not accept positional arguments.", "usage_error");

@@ -306,21 +306,35 @@ export class Fleet {
     const byName = new Map(agents.filter((agent) => agent.name).map((agent) => [agent.name, agent]));
     await this.store.update((registry) => {
       for (const assignment of registry.assignments) {
-        if (!ACTIVE.has(assignment.status) || assignment.status === "pending") continue;
+        const tracked = ACTIVE.has(assignment.status) || assignment.status === "settled";
+        if (!tracked || assignment.status === "pending") continue;
         const agent = byName.get(assignment.name);
+        if (!agent && assignment.status === "settled") continue;
         const previousStatus = assignment.status;
         const previousHerdrState = assignment.herdrState;
+        const previousLocation = [assignment.workspaceId, assignment.tabId, assignment.paneId].join(":");
         if (!agent) {
           assignment.status = "missing";
           assignment.herdrState = "missing";
         } else {
+          assignment.workspaceId = agent.workspace_id ?? assignment.workspaceId;
+          assignment.tabId = agent.tab_id ?? assignment.tabId;
+          assignment.paneId = agent.pane_id ?? assignment.paneId;
           const state = agent.agent_status ?? "unknown";
           assignment.herdrState = state;
           if (state === "working" || state === "blocked") assignment.status = state;
           else if (state === "idle" || state === "done") assignment.status = "settled";
           else assignment.status = "unknown";
+          if (assignment.role === "worker" && assignment.taskId) {
+            const task = registry.tasks.find((item) => item.id === assignment.taskId);
+            if (task) {
+              task.workspaceId = assignment.workspaceId;
+              task.tabId = assignment.tabId;
+            }
+          }
         }
-        if (assignment.status !== previousStatus || assignment.herdrState !== previousHerdrState) {
+        const location = [assignment.workspaceId, assignment.tabId, assignment.paneId].join(":");
+        if (assignment.status !== previousStatus || assignment.herdrState !== previousHerdrState || location !== previousLocation) {
           assignment.updatedAt = now();
         }
       }

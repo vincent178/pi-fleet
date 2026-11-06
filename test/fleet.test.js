@@ -93,6 +93,47 @@ test("Herdr done maps to settled and release closes the task tab", async (t) => 
   assert.equal((await fleet.store.read()).tasks[0].status, "released");
 });
 
+test("refresh follows an assignment moved to another pane", async (t) => {
+  const { fleet, herdr, taskCard } = await fixture(t);
+  await fleet.createTeam({ name: "team-a", noUi: true });
+  const assignment = await fleet.dispatch({ team: "team-a", task: taskCard });
+  Object.assign(herdr.agents.get(assignment.name), {
+    pane_id: "w1:p99",
+    tab_id: "w1:t99",
+    workspace_id: "w1",
+  });
+  const snapshot = await fleet.status();
+  assert.equal(snapshot.assignments[0].paneId, "w1:p99");
+  assert.equal(snapshot.assignments[0].tabId, "w1:t99");
+  assert.equal(snapshot.tasks[0].tabId, "w1:t99");
+});
+
+test("settled assignments resume when Herdr reports work", async (t) => {
+  const { fleet, herdr, taskCard } = await fixture(t);
+  await fleet.createTeam({ name: "team-a", noUi: true });
+  const assignment = await fleet.dispatch({ team: "team-a", task: taskCard });
+  herdr.agents.get(assignment.name).agent_status = "idle";
+  const settled = await fleet.status();
+  assert.equal(settled.assignments[0].status, "settled");
+  assert.equal(settled.teams[0].activeWorkers, 0);
+  herdr.agents.get(assignment.name).agent_status = "working";
+  const working = await fleet.status();
+  assert.equal(working.assignments[0].status, "working");
+  assert.equal(working.teams[0].activeWorkers, 1);
+});
+
+test("settled assignments remain settled after agent exit", async (t) => {
+  const { fleet, herdr, taskCard } = await fixture(t);
+  await fleet.createTeam({ name: "team-a", noUi: true });
+  const assignment = await fleet.dispatch({ team: "team-a", task: taskCard });
+  herdr.agents.get(assignment.name).agent_status = "done";
+  await fleet.status();
+  herdr.agents.delete(assignment.name);
+  const snapshot = await fleet.status();
+  assert.equal(snapshot.assignments[0].status, "settled");
+  assert.equal(snapshot.teams[0].activeWorkers, 0);
+});
+
 test("active release requires force", async (t) => {
   const { fleet, taskCard } = await fixture(t);
   await fleet.createTeam({ name: "team-a", noUi: true });
