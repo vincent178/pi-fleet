@@ -1,6 +1,6 @@
 ---
 name: fleet
-description: Coordinate pi agents through Herdr. Use for agent dispatch, assignment status, event waits, Herdr tab layouts, and fleet cleanup.
+description: Agent orchestrator for pi agents through Herdr. Use when coordinating multiple agents, dispatching tasks, checking assignment status, waiting for agent events, managing Herdr layouts, or fleet cleanup.
 ---
 
 # Fleet coordination
