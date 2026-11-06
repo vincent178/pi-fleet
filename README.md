@@ -190,10 +190,26 @@ One coordinator can supervise several Over task loops through independent
 assignments. Fleet reports Herdr states only. The Over workflow owns independent
 verification, task completion, and task-card status.
 
-Registry event IDs and `delivery.json` suppress duplicate notifications after
-reconnects and ordinary reloads. Failed sends remain pending. The first watcher
-startup establishes a baseline, so existing history does not wake the
-coordinator. Session shutdown closes the socket and file watcher.
+Fleet uses explicit at-least-once delivery. It records an event only after
+`pi.sendMessage()` returns. An explicit send failure leaves the event pending.
+A fresh coordinator runtime retries pending events. Registry event IDs and
+`delivery.json` prevent resends after reconnects and completed reloads.
+
+A failure can occur after a send but before `delivery.json` records the event.
+A later reconciliation or reload may then duplicate that message. Pi
+`sendMessage()` has no idempotency key. Fleet does not claim exactly-once
+delivery. Each message tells Over to use task-card state and Evidence for
+idempotent handling.
+
+The first watcher startup establishes a baseline. Existing history does not
+wake the coordinator. Internal Fleet event messages use `display: false`.
+
+One registry has one active assignment coordinator. The coordinator acquires
+`coordinator.json` through exclusive file creation. While that lease is active,
+a second runtime cannot start watchers or deliver messages from that registry. The owner renews the
+lease during its session. An expired lease permits recovery after a crash.
+Every delivery checks ownership first. Session shutdown closes the socket and
+file watcher, stops renewal, and releases the lease.
 
 Use `fleet wait` when a script or the next coordinator action has a synchronous
 dependency on an assignment state. The command keeps its blocking behavior.
@@ -208,12 +224,15 @@ The default registry directory is `.pi/fleet`. Use `--root` or
 .pi/fleet/
 ├── registry.json
 ├── events.jsonl
-└── delivery.json
+├── delivery.json
+└── coordinator.json
 ```
 
 `registry.json` stores teams, tasks, assignments, and Herdr IDs. `events.jsonl`
 stores creation records and assignment state transitions with stable event IDs.
 `delivery.json` stores handled event IDs for coordinator notifications.
+`coordinator.json` stores the active coordinator lease and its expiry. Shutdown
+removes the lease file. Stale recovery removes it after a crash.
 
 Assignment states have these meanings:
 

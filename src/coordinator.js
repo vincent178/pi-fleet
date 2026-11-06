@@ -1,4 +1,5 @@
 import { watch } from "node:fs";
+import { FleetError } from "./errors.js";
 import { isAssignmentEvent, isRegisteredDiscovery } from "./herdr-events.js";
 import { registryEventId } from "./store.js";
 
@@ -22,13 +23,24 @@ export function formatAssignmentMessage(event, assignment) {
     `Role: ${formatMessageValue(assignment.role)}`,
     `State: ${formatMessageValue(event.from)} -> ${formatMessageValue(event.to)}`,
     `Team: ${formatMessageValue(assignment.team)}`,
+    "Delivery uses at-least-once semantics. This event may be a duplicate.",
+    "Use task-card state and Evidence to make Over handling idempotent.",
+    "Do not repeat actions that the task card or Evidence records as complete.",
     "Inspect the assignment before further action.",
     "Herdr states do not prove task completion.",
   ].join("\n");
 }
 
 export class AssignmentCoordinator {
-  constructor({ fleet, watcher, deliver, onWarning = () => {}, watchDirectory = watch }) {
+  constructor({
+    fleet,
+    watcher,
+    deliver,
+    onWarning = () => {},
+    watchDirectory = watch,
+    leaseDurationMs = 10_000,
+    leaseRenewMs = Math.max(100, Math.floor(leaseDurationMs / 3)),
+  }) {
     this.fleet = fleet;
     this.store = fleet.store;
     this.watcher = watcher;
@@ -40,8 +52,13 @@ export class AssignmentCoordinator {
     this.pendingMoves = [];
     this.watchedPaneIds = new Set();
     this.watchedTabIds = new Set();
-    this.handledEventIds = new Set();
     this.fileWatcher = null;
+    this.leaseDurationMs = leaseDurationMs;
+    this.leaseRenewMs = leaseRenewMs;
+    this.lease = null;
+    this.leaseTimer = null;
+    this.leaseRenewal = null;
+    this.leaseRelease = null;
     this.drainPromise = null;
     this.startPromise = null;
     this.generation = 0;
@@ -74,23 +91,96 @@ export class AssignmentCoordinator {
       throw error;
     }
     if (generation !== this.generation) return false;
-    await this.store.initializeDelivery();
-    if (generation !== this.generation) return false;
+    await this.releaseLease();
+    this.lease = await this.store.acquireCoordinatorLease({ leaseMs: this.leaseDurationMs });
+    if (!this.lease) return false;
+    if (generation !== this.generation) {
+      await this.releaseLease();
+      return false;
+    }
     this.active = true;
-    this.watcher.on("ready", this.onReady);
-    this.watcher.on("event", this.onEvent);
-    this.watcher.on("warning", this.onWarningEvent);
+    this.startLeaseRenewal(generation);
     try {
+      await this.store.initializeDelivery();
+      if (generation !== this.generation) {
+        await this.releaseLease();
+        return false;
+      }
+      this.watcher.on("ready", this.onReady);
+      this.watcher.on("event", this.onEvent);
+      this.watcher.on("warning", this.onWarningEvent);
       this.fileWatcher = this.watchDirectory(this.fleet.root, this.onFileEvent);
       this.fileWatcher.on("error", this.onWarningEvent);
       this.watcher.start();
       await this.requestReconciliation();
       return true;
     } catch (error) {
-      this.closeResources();
-      this.active = false;
+      this.deactivate();
+      await this.releaseLease();
       throw error;
     }
+  }
+
+  startLeaseRenewal(generation) {
+    this.clearLeaseRenewal();
+    this.leaseTimer = setInterval(() => void this.renewLease(generation), this.leaseRenewMs);
+    this.leaseTimer.unref();
+  }
+
+  clearLeaseRenewal() {
+    clearInterval(this.leaseTimer);
+    this.leaseTimer = null;
+  }
+
+  async renewLease(generation) {
+    if (this.leaseRenewal) return this.leaseRenewal;
+    const renewal = (async () => {
+      if (!this.active || generation !== this.generation || !this.lease) return;
+      try {
+        const owned = await this.store.renewCoordinatorLease(this.lease, this.leaseDurationMs);
+        if (!owned && this.active && generation === this.generation) {
+          this.deactivate();
+          this.onWarning(new FleetError("The coordinator lease belongs to another runtime.", "coordinator_lease_lost"));
+          await this.releaseLease();
+        }
+      } catch (error) {
+        this.onWarning(error);
+      }
+    })();
+    this.leaseRenewal = renewal;
+    try {
+      await renewal;
+    } finally {
+      if (this.leaseRenewal === renewal) this.leaseRenewal = null;
+    }
+  }
+
+  releaseLease() {
+    if (!this.lease) return Promise.resolve(false);
+    if (!this.leaseRelease) {
+      const lease = this.lease;
+      this.leaseRelease = this.store.releaseCoordinatorLease(lease).finally(() => {
+        if (this.lease === lease) this.lease = null;
+        this.leaseRelease = null;
+      });
+    }
+    return this.leaseRelease;
+  }
+
+  deactivate() {
+    this.active = false;
+    this.pending = false;
+    this.clearLeaseRenewal();
+    this.closeResources();
+  }
+
+  async confirmLease() {
+    if (!this.active) return false;
+    if (this.lease && (await this.store.ownsCoordinatorLease(this.lease))) return true;
+    this.deactivate();
+    this.onWarning(new FleetError("The coordinator lease is no longer valid.", "coordinator_lease_lost"));
+    await this.releaseLease();
+    return false;
   }
 
   receiveEvent(event) {
@@ -133,16 +223,17 @@ export class AssignmentCoordinator {
   }
 
   async reconcile() {
+    if (!(await this.confirmLease())) return;
     const moves = this.pendingMoves.splice(0);
     for (const event of moves) {
       await this.fleet.reconcileEvent(event);
     }
     await this.fleet.status();
-    if (!this.active) return;
+    if (!(await this.confirmLease())) return;
     const events = await this.store.readEvents();
     const registry = await this.store.read();
     const delivery = await this.store.readDelivery();
-    if (!this.active) return;
+    if (!(await this.confirmLease())) return;
     this.watchedPaneIds.clear();
     this.watchedTabIds.clear();
     for (const assignment of registry.assignments) {
@@ -151,12 +242,7 @@ export class AssignmentCoordinator {
       if (assignment.tabId) this.watchedTabIds.add(assignment.tabId);
     }
     this.watcher.setPaneIds([...this.watchedPaneIds]);
-    const persisted = new Set(delivery?.handledEventIds ?? []);
-    const handled = new Set([...persisted, ...this.handledEventIds]);
-    await this.persistHandled(
-      [...handled].filter((id) => !persisted.has(id)),
-      handled,
-    );
+    const handled = new Set(delivery?.handledEventIds ?? []);
     const ignored = [];
     for (const event of events) {
       const id = registryEventId(event);
@@ -164,7 +250,7 @@ export class AssignmentCoordinator {
     }
     await this.persistHandled(ignored, handled);
     for (const event of events) {
-      if (!this.active) return;
+      if (!(await this.confirmLease())) return;
       const id = registryEventId(event);
       if (handled.has(id) || !isActionableAssignmentEvent(event)) continue;
       const assignment = registry.assignments.find((item) => item.id === event.assignmentId);
@@ -177,7 +263,7 @@ export class AssignmentCoordinator {
         {
           customType: "fleet-assignment",
           content: formatAssignmentMessage(event, assignment),
-          display: true,
+          display: false,
           details: {
             eventId: id,
             event: {
@@ -200,19 +286,14 @@ export class AssignmentCoordinator {
         },
         { triggerTurn: true, deliverAs: "followUp" },
       );
-      handled.add(id);
-      this.handledEventIds.add(id);
       await this.persistHandled([id], handled);
     }
   }
 
   async persistHandled(eventIds, handled) {
-    for (const id of eventIds) {
-      handled.add(id);
-      this.handledEventIds.add(id);
-    }
     try {
       await this.store.markEventsHandled(eventIds);
+      for (const id of eventIds) handled.add(id);
     } catch (error) {
       this.onWarning(error);
     }
@@ -232,10 +313,10 @@ export class AssignmentCoordinator {
 
   async stop() {
     this.generation += 1;
-    this.active = false;
-    this.pending = false;
-    this.closeResources();
+    this.deactivate();
     if (this.startPromise) await this.startPromise;
+    if (this.leaseRenewal) await this.leaseRenewal;
     if (this.drainPromise) await this.drainPromise;
+    await this.releaseLease();
   }
 }

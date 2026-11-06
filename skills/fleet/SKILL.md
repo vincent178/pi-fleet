@@ -71,9 +71,24 @@ the user. Use `pi-fleet wait --assignment <id>` for scripts or explicit
 synchronous dependencies. Use `--until blocked` to wait only for blockage. This
 command retains its blocking behavior.
 
-Persistent delivery state suppresses duplicate notifications after reconnects
-and ordinary reloads. Failed sends remain pending. Session shutdown closes the
-socket and file watcher.
+Fleet uses explicit at-least-once delivery. A successful send precedes the
+`delivery.json` record. An explicit send failure leaves the event pending. A
+fresh coordinator runtime retries pending events. Handled event IDs prevent
+resends after reconnects and completed reloads.
+
+A failure can occur after a send but before persistence. A fresh runtime may
+then duplicate the message. Pi `sendMessage()` has no idempotency key. Use
+task-card state and Evidence for idempotent handling. Fleet does not claim
+exactly-once delivery. Internal Fleet event messages use `display: false`.
+
+One registry has one active assignment coordinator. Exclusive creation of
+`coordinator.json` acquires the lease. Renewal keeps the lease active. A second
+runtime cannot watch or deliver while that lease is active. Expiry permits
+recovery after a crash. Every delivery checks ownership first.
+
+The first watcher startup establishes a baseline. Existing history does not
+wake the coordinator. Session shutdown closes watchers, stops renewal, and
+releases the lease.
 
 Herdr `idle` and `done` states become `settled` in the registry. These states
 do not prove task completion. Use task artifacts and independent verification

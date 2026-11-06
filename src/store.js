@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { open, mkdir, readFile, rename, stat, unlink, appendFile } from "node:fs/promises";
+import { open, mkdir, readFile, rename, stat, unlink, appendFile, link } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { FleetError } from "./errors.js";
@@ -8,6 +8,8 @@ const REGISTRY_VERSION = 1;
 const LOCK_TIMEOUT_MS = 10_000;
 const STALE_LOCK_MS = 30_000;
 const DELIVERY_VERSION = 1;
+const COORDINATOR_LEASE_VERSION = 1;
+const DEFAULT_COORDINATOR_LEASE_MS = 10_000;
 
 export function registryEventId(event) {
   if (event.id) return event.id;
@@ -58,12 +60,36 @@ async function writeAtomic(path, value) {
   await rename(temporary, path);
 }
 
+function leaseRecord(lease) {
+  return { version: lease.version, ownerId: lease.ownerId, expiresAt: lease.expiresAt };
+}
+
+async function readLease(path) {
+  try {
+    const lease = JSON.parse(await readFile(path, "utf8"));
+    if (
+      lease.version !== COORDINATOR_LEASE_VERSION ||
+      typeof lease.ownerId !== "string" ||
+      !Number.isFinite(lease.expiresAt)
+    ) {
+      throw new FleetError("The coordinator lease is not supported.", "coordinator_lease_invalid");
+    }
+    return lease;
+  } catch (error) {
+    if (error.code === "ENOENT" || error instanceof FleetError) throw error;
+    throw new FleetError("The coordinator lease is not valid JSON.", "coordinator_lease_invalid", {
+      cause: error,
+    });
+  }
+}
+
 export class RegistryStore {
   constructor(root) {
     this.root = root;
     this.registryPath = join(root, "registry.json");
     this.eventsPath = join(root, "events.jsonl");
     this.deliveryPath = join(root, "delivery.json");
+    this.coordinatorLeasePath = join(root, "coordinator.json");
     this.lockPath = join(root, "registry.lock");
   }
 
@@ -244,6 +270,131 @@ export class RegistryStore {
       } catch (error) {
         if (error.code !== "ENOENT") throw error;
       }
+    }
+  }
+
+  async acquireCoordinatorLease({ leaseMs = DEFAULT_COORDINATOR_LEASE_MS } = {}) {
+    await mkdir(this.root, { recursive: true });
+    while (true) {
+      let handle;
+      try {
+        handle = await open(this.coordinatorLeasePath, "wx");
+        const lease = {
+          version: COORDINATOR_LEASE_VERSION,
+          ownerId: randomUUID(),
+          expiresAt: Date.now() + leaseMs,
+          handle,
+        };
+        await handle.writeFile(`${JSON.stringify(leaseRecord(lease))}\n`, "utf8");
+        await handle.sync();
+        return lease;
+      } catch (error) {
+        await handle?.close();
+        if (error.code !== "EEXIST") throw error;
+      }
+      if (!(await this.recoverStaleCoordinatorLease(leaseMs))) return null;
+    }
+  }
+
+  async recoverStaleCoordinatorLease(leaseMs) {
+    const now = Date.now();
+    let observed;
+    try {
+      observed = await this.readCoordinatorLease();
+    } catch (error) {
+      if (error.code !== "coordinator_lease_invalid") throw error;
+    }
+    if (observed && observed.expiresAt > now) return false;
+    if (!observed) {
+      let details;
+      try {
+        details = await stat(this.coordinatorLeasePath);
+      } catch (error) {
+        if (error.code === "ENOENT") return true;
+        throw error;
+      }
+      if (now - details.mtimeMs <= leaseMs) return false;
+    }
+
+    const recoveryPath = `${this.coordinatorLeasePath}.${process.pid}.${randomUUID()}.recovery`;
+    try {
+      await rename(this.coordinatorLeasePath, recoveryPath);
+    } catch (error) {
+      if (error.code === "ENOENT") return true;
+      throw error;
+    }
+    let recovered;
+    try {
+      recovered = await readLease(recoveryPath);
+    } catch (error) {
+      if (error.code !== "coordinator_lease_invalid") throw error;
+    }
+    let stale = recovered ? recovered.expiresAt <= now : false;
+    if (!recovered) {
+      const details = await stat(recoveryPath);
+      stale = now - details.mtimeMs > leaseMs;
+    }
+    if (stale) {
+      await unlink(recoveryPath);
+      return true;
+    }
+
+    try {
+      await link(recoveryPath, this.coordinatorLeasePath);
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+    }
+    await unlink(recoveryPath);
+    return false;
+  }
+
+  async renewCoordinatorLease(lease, leaseMs = DEFAULT_COORDINATOR_LEASE_MS) {
+    if (!(await this.ownsCoordinatorLease(lease))) return false;
+    lease.expiresAt = Date.now() + leaseMs;
+    const source = `${JSON.stringify(leaseRecord(lease))}\n`;
+    await lease.handle.truncate(0);
+    await lease.handle.write(source, 0, "utf8");
+    await lease.handle.sync();
+    return this.ownsCoordinatorLease(lease);
+  }
+
+  async ownsCoordinatorLease(lease) {
+    if (!lease?.handle) return false;
+    try {
+      const [current, owned] = await Promise.all([stat(this.coordinatorLeasePath), lease.handle.stat()]);
+      return current.dev === owned.dev && current.ino === owned.ino;
+    } catch (error) {
+      if (error.code === "ENOENT" || error.code === "EBADF") return false;
+      throw error;
+    }
+  }
+
+  async releaseCoordinatorLease(lease) {
+    if (!lease?.handle) return false;
+    try {
+      if (!(await this.ownsCoordinatorLease(lease))) return false;
+      const releasePath = `${this.coordinatorLeasePath}.${process.pid}.${lease.ownerId}.release`;
+      try {
+        await rename(this.coordinatorLeasePath, releasePath);
+      } catch (error) {
+        if (error.code === "ENOENT") return false;
+        throw error;
+      }
+      await unlink(releasePath);
+      return true;
+    } finally {
+      await lease.handle.close().catch((error) => {
+        if (error.code !== "EBADF") throw error;
+      });
+    }
+  }
+
+  async readCoordinatorLease() {
+    try {
+      return await readLease(this.coordinatorLeasePath);
+    } catch (error) {
+      if (error.code === "ENOENT") return null;
+      throw error;
     }
   }
 

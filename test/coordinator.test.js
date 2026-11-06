@@ -147,6 +147,8 @@ async function fixture(t, options = {}) {
       files.push(file);
       return file;
     },
+    leaseDurationMs: options.leaseDurationMs,
+    leaseRenewMs: options.leaseRenewMs,
   });
   t.after(async () => {
     await coordinator.stop();
@@ -155,6 +157,38 @@ async function fixture(t, options = {}) {
   await coordinator.start();
   await idle(coordinator);
   return { root, fleet, herdr, watcher, files, deliveries, warnings, coordinator };
+}
+
+async function runtime(t, current, options = {}) {
+  const watcher = new FakeWatcher();
+  const files = [];
+  const deliveries = options.deliveries ?? current.deliveries;
+  const warnings = options.warnings ?? current.warnings;
+  const coordinator = new AssignmentCoordinator({
+    fleet: current.fleet,
+    watcher,
+    deliver: async (message, deliveryOptions) => {
+      if (options.deliver) await options.deliver(message, deliveryOptions);
+      deliveries.push({ message, options: deliveryOptions });
+    },
+    onWarning: (error) => warnings.push(error),
+    watchDirectory: (_path, onEvent) => {
+      const file = new FakeDirectory(onEvent);
+      files.push(file);
+      return file;
+    },
+    leaseDurationMs: options.leaseDurationMs,
+    leaseRenewMs: options.leaseRenewMs,
+  });
+  t.after(() => coordinator.stop());
+  const started = await coordinator.start();
+  if (started) await idle(coordinator);
+  return { ...current, watcher, files, deliveries, warnings, coordinator, started };
+}
+
+async function reload(t, current, options = {}) {
+  await current.coordinator.stop();
+  return runtime(t, current, options);
 }
 
 test("startup ignores historical events and subscribes to every active pane", async (t) => {
@@ -204,11 +238,14 @@ test("blocked events identify the task, assignment, role, state, and completion 
   assert.equal(deliveries.length, 1);
   const { message, options } = deliveries[0];
   assert.equal(message.customType, "fleet-assignment");
-  assert.equal(message.display, true);
+  assert.equal(message.display, false);
   assert.match(message.content, /Task card: "\/tasks\/a1\.md"/);
   assert.match(message.content, /Assignment: "a1" \("agent-a1"\)/);
   assert.match(message.content, /Role: "worker"/);
   assert.match(message.content, /State: "working" -> "blocked"/);
+  assert.match(message.content, /at-least-once semantics.*may be a duplicate/);
+  assert.match(message.content, /task-card state and Evidence.*Over handling idempotent/);
+  assert.match(message.content, /Do not repeat actions.*records as complete/);
   assert.match(message.content, /Herdr states do not prove task completion/);
   assert.deepEqual(options, { triggerTurn: true, deliverAs: "followUp" });
   assert.equal(message.details.eventId, "event-1");
@@ -278,9 +315,8 @@ test("duplicate IDs and ordinary reloads do not resend delivered events", async 
   files[0].signal();
   await idle(coordinator);
   assert.equal(deliveries.length, 1);
-  await coordinator.stop();
-  await coordinator.start();
-  await coordinator.requestReconciliation();
+  const reloaded = await reload(t, { fleet, deliveries, warnings: [], coordinator });
+  await reloaded.coordinator.requestReconciliation();
   assert.equal(deliveries.length, 1);
   assert.equal(files[0].closed, true);
 });
@@ -301,14 +337,12 @@ test("failed delivery remains pending across an ordinary reload", async (t) => {
   assert.equal(deliveries.length, 0);
   assert.equal(warnings.length, 1);
   assert.ok(!(await fleet.store.readDelivery()).handledEventIds.includes("event-retry"));
-  await coordinator.stop();
-  await coordinator.start();
-  await idle(coordinator);
+  await reload(t, { fleet, deliveries, warnings, coordinator });
   assert.equal(deliveries.length, 1);
   assert.equal(deliveries[0].message.details.eventId, "event-retry");
 });
 
-test("failed persistence after delivery suppresses duplicates and recovers state", async (t) => {
+test("incomplete persistence permits at-least-once duplicates and recovers state", async (t) => {
   const { fleet, files, deliveries, warnings, coordinator } = await fixture(t);
   await appendEvents(fleet, [changed("event-persistence", "a1", "blocked")]);
   const markEventsHandled = fleet.store.markEventsHandled.bind(fleet.store);
@@ -328,8 +362,73 @@ test("failed persistence after delivery suppresses duplicates and recovers state
   assert.ok(!(await fleet.store.readDelivery()).handledEventIds.includes("event-persistence"));
   files[0].signal();
   await idle(coordinator);
-  assert.equal(deliveries.length, 1);
+  assert.equal(deliveries.length, 2);
   assert.ok((await fleet.store.readDelivery()).handledEventIds.includes("event-persistence"));
+  await reload(t, { fleet, deliveries, warnings, coordinator });
+  assert.equal(deliveries.length, 2);
+});
+
+test("a fresh runtime may duplicate a send when persistence stays incomplete", async (t) => {
+  const { fleet, files, deliveries, warnings, coordinator } = await fixture(t);
+  await appendEvents(fleet, [changed("event-uncertain", "a1", "blocked")]);
+  const markEventsHandled = fleet.store.markEventsHandled.bind(fleet.store);
+  fleet.store.markEventsHandled = async (eventIds) => {
+    if (eventIds.includes("event-uncertain")) throw new Error("Persistent write unavailable.");
+    return markEventsHandled(eventIds);
+  };
+  files[0].signal();
+  await idle(coordinator);
+  assert.equal(deliveries.length, 1);
+  assert.ok(!(await fleet.store.readDelivery()).handledEventIds.includes("event-uncertain"));
+  fleet.store.markEventsHandled = markEventsHandled;
+  await reload(t, { fleet, deliveries, warnings, coordinator });
+  assert.equal(deliveries.length, 2);
+  assert.ok((await fleet.store.readDelivery()).handledEventIds.includes("event-uncertain"));
+});
+
+test("an overlapping coordinator cannot watch or deliver from an owned registry", async (t) => {
+  const first = await fixture(t);
+  const second = await runtime(t, first, { deliveries: [], warnings: [] });
+  assert.equal(second.started, false);
+  assert.equal(second.watcher.startCalls, 0);
+  assert.equal(second.files.length, 0);
+  await appendEvents(first.fleet, [changed("event-single-owner", "a1", "blocked")]);
+  await Promise.all([first.coordinator.requestReconciliation(), second.coordinator.requestReconciliation()]);
+  assert.deepEqual(first.deliveries.map(({ message }) => message.details.eventId), ["event-single-owner"]);
+  assert.equal(second.deliveries.length, 0);
+  await first.coordinator.stop();
+  assert.equal(await second.coordinator.start(), true);
+  await idle(second.coordinator);
+  assert.equal(second.watcher.startCalls, 1);
+  assert.equal(second.deliveries.length, 0);
+});
+
+test("lease renewal keeps an active coordinator in ownership", async (t) => {
+  const first = await fixture(t, { leaseDurationMs: 100, leaseRenewMs: 15 });
+  const initial = await first.fleet.store.readCoordinatorLease();
+  await delay(180);
+  const renewed = await first.fleet.store.readCoordinatorLease();
+  assert.equal(renewed.ownerId, initial.ownerId);
+  assert.ok(renewed.expiresAt > initial.expiresAt);
+  const second = await runtime(t, first, { deliveries: [], warnings: [] });
+  assert.equal(second.started, false);
+  assert.equal(second.watcher.startCalls, 0);
+});
+
+test("stale recovery fences the previous runtime and permits one replacement", async (t) => {
+  const first = await fixture(t, { leaseDurationMs: 40, leaseRenewMs: 60_000 });
+  await delay(70);
+  const second = await runtime(t, first, { deliveries: [], warnings: [] });
+  assert.equal(second.started, true);
+  assert.notEqual(second.coordinator.lease.ownerId, first.coordinator.lease.ownerId);
+  await appendEvents(first.fleet, [changed("event-after-crash", "a1", "blocked")]);
+  await Promise.all([first.coordinator.requestReconciliation(), second.coordinator.requestReconciliation()]);
+  assert.equal(first.deliveries.length, 0);
+  assert.equal(first.coordinator.active, false);
+  assert.equal(first.files[0].closed, true);
+  assert.deepEqual(second.deliveries.map(({ message }) => message.details.eventId), ["event-after-crash"]);
+  await first.coordinator.stop();
+  assert.equal(await second.fleet.store.ownsCoordinatorLease(second.coordinator.lease), true);
 });
 
 test("orphaned events are recorded without blocking later valid events", async (t) => {
@@ -495,6 +594,9 @@ test("stop closes watchers, removes listeners, and ignores later events", async 
   assert.equal(watcher.listenerCount("ready"), 0);
   assert.equal(watcher.listenerCount("warning"), 0);
   assert.equal(files[0].listenerCount("error"), 0);
+  assert.equal(coordinator.leaseTimer, null);
+  assert.equal(coordinator.lease, null);
+  assert.equal(await fleet.store.readCoordinatorLease(), null);
   await appendEvents(fleet, [changed("event-stop", "a1", "blocked")]);
   files[0].signal();
   watcher.emit("event", { event: "pane_agent_status_changed", data: { pane_id: "p-a1" } });
