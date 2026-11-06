@@ -44,6 +44,13 @@ export class Fleet {
     this.store = new RegistryStore(this.root);
     this.herdr = herdr ?? new HerdrClient({ cwd: this.cwd });
     this.cliPath = cliPath ?? fileURLToPath(new URL("./cli.js", import.meta.url));
+    this.reconciliation = Promise.resolve();
+  }
+
+  serializeReconciliation(operation) {
+    const result = this.reconciliation.then(operation);
+    this.reconciliation = result.catch(() => {});
+    return result;
   }
 
   statusCommand(team, watch = true) {
@@ -303,7 +310,11 @@ export class Fleet {
     return (await this.store.read()).assignments.find((assignment) => assignment.id === assignmentId);
   }
 
-  async refresh(team) {
+  refresh(team) {
+    return this.serializeReconciliation(() => this.refreshNow(team));
+  }
+
+  async refreshNow(team) {
     const agents = await this.herdr.listAgents();
     const byName = new Map(agents.filter((agent) => agent.name).map((agent) => [agent.name, agent]));
     await this.store.update((registry) => {
@@ -345,8 +356,12 @@ export class Fleet {
     });
   }
 
-  async reconcileEvent(event, team) {
-    if (event.event !== "pane_moved") return false;
+  reconcileEvent(event, team) {
+    if (event.event !== "pane_moved") return Promise.resolve(false);
+    return this.serializeReconciliation(() => this.reconcileMovedPane(event, team));
+  }
+
+  async reconcileMovedPane(event, team) {
     const data = event.data ?? {};
     if (!data.previous_pane_id || !data.pane) return false;
     return this.store.update((registry) => {
@@ -354,7 +369,7 @@ export class Fleet {
       for (const assignment of registry.assignments) {
         if (
           assignment.paneId !== data.previous_pane_id ||
-          ["failed", "released"].includes(assignment.status) ||
+          assignment.status === "released" ||
           (team && assignment.team !== team)
         ) {
           continue;

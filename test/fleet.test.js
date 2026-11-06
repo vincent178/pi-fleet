@@ -205,6 +205,52 @@ test("team status refresh ignores assignments from other teams", async (t) => {
   assert.equal(assignments.find((item) => item.id === second.id).status, "settled");
 });
 
+test("move reconciliation waits for an in-flight refresh", async (t) => {
+  const { fleet, herdr, taskCard } = await fixture(t);
+  await fleet.createTeam({ name: "team-a", noUi: true });
+  const assignment = await fleet.dispatch({ team: "team-a", task: taskCard });
+  const staleAgent = { ...herdr.agents.get(assignment.name) };
+  let resolveAgents;
+  herdr.listAgents = () =>
+    new Promise((resolve) => {
+      resolveAgents = () => resolve([staleAgent]);
+    });
+  const refreshing = fleet.refresh();
+  const moving = fleet.reconcileEvent({
+    event: "pane_moved",
+    data: {
+      previous_pane_id: assignment.paneId,
+      pane: { pane_id: "w1:p99", tab_id: "w1:t99", workspace_id: "w1" },
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  resolveAgents();
+  await Promise.all([refreshing, moving]);
+  assert.equal((await fleet.store.read()).assignments[0].paneId, "w1:p99");
+});
+
+test("failed dispatch moves remain tracked until release", async (t) => {
+  const { fleet, herdr, taskCard } = await fixture(t);
+  await fleet.createTeam({ name: "team-a", noUi: true });
+  herdr.promptAgent = async () => {
+    throw new FleetError("Prompt failed", "agent_prompt_stalled");
+  };
+  await assert.rejects(fleet.dispatch({ team: "team-a", task: taskCard }), { code: "agent_prompt_stalled" });
+  const assignment = (await fleet.store.read()).assignments[0];
+  const moved = await fleet.reconcileEvent({
+    event: "pane_moved",
+    data: {
+      previous_pane_id: assignment.paneId,
+      pane: { pane_id: "w1:p99", tab_id: "w1:t99", workspace_id: "w1" },
+    },
+  });
+  assert.equal(moved, true);
+  assert.equal((await fleet.store.read()).assignments[0].paneId, "w1:p99");
+  await fleet.release(assignment.id, { force: true });
+  assert.deepEqual(herdr.closedPanes, ["w1:p99"]);
+  assert.deepEqual(herdr.closedTabs, [assignment.tabId]);
+});
+
 test("settled assignments resume when Herdr reports work", async (t) => {
   const { fleet, herdr, taskCard } = await fixture(t);
   await fleet.createTeam({ name: "team-a", noUi: true });
