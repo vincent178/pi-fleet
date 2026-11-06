@@ -223,7 +223,38 @@ test("move reconciliation waits for an in-flight refresh", async (t) => {
       pane: { pane_id: "w1:p99", tab_id: "w1:t99", workspace_id: "w1" },
     },
   });
-  await new Promise((resolve) => setImmediate(resolve));
+  for (let attempt = 0; attempt < 20 && !resolveAgents; attempt += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.equal(typeof resolveAgents, "function");
+  resolveAgents();
+  await Promise.all([refreshing, moving]);
+  assert.equal((await fleet.store.read()).assignments[0].paneId, "w1:p99");
+});
+
+test("refresh does not overwrite moves committed by another Fleet instance", async (t) => {
+  const { fleet, herdr, cwd, taskCard } = await fixture(t);
+  await fleet.createTeam({ name: "team-a", noUi: true });
+  const assignment = await fleet.dispatch({ team: "team-a", task: taskCard });
+  const secondFleet = new Fleet({ cwd, root: ".fleet", herdr });
+  const staleAgent = { ...herdr.agents.get(assignment.name) };
+  let resolveAgents;
+  herdr.listAgents = () =>
+    new Promise((resolve) => {
+      resolveAgents = () => resolve([staleAgent]);
+    });
+  const refreshing = fleet.refresh();
+  for (let attempt = 0; attempt < 20 && !resolveAgents; attempt += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.equal(typeof resolveAgents, "function");
+  const moving = secondFleet.reconcileEvent({
+    event: "pane_moved",
+    data: {
+      previous_pane_id: assignment.paneId,
+      pane: { pane_id: "w1:p99", tab_id: "w1:t99", workspace_id: "w1" },
+    },
+  });
   resolveAgents();
   await Promise.all([refreshing, moving]);
   assert.equal((await fleet.store.read()).assignments[0].paneId, "w1:p99");
