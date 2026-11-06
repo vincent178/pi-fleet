@@ -43,7 +43,7 @@ test("summary prioritizes active assignments and compacts history", () => {
   });
 
   assert.match(output, /Fleet: 2 active assignments/);
-  assert.match(output, /team-a: 2 active assignments \(1\/4 workers\)/);
+  assert.match(output, /team-a: 2 active assignments \(1 of 4 worker slots used\)/);
   assert.match(output, /WORKING worker w-team-a/);
   assert.match(output, /WORKING verifier v-team-a/);
   assert.match(output, /task-one\.md/);
@@ -72,9 +72,10 @@ test("summary separates active verifiers from worker capacity", () => {
   });
 
   assert.match(output, /Fleet: 1 active assignment/);
-  assert.match(output, /repo-cleanup: 1 active assignment \(0\/4 workers\)/);
+  assert.match(output, /repo-cleanup: 1 active assignment \(0 of 4 worker slots used\)/);
   assert.match(output, /WORKING verifier web-lint-verifier-2/);
   assert.doesNotMatch(output, /0 active workers/);
+  assert.doesNotMatch(output, /0\/4 workers/);
 });
 
 test("summary handles no teams", () => {
