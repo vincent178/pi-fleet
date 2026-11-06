@@ -22,8 +22,9 @@ Create a team before agent dispatch:
 pi-fleet team create team-a --limit 5
 ```
 
-This command creates one team tab with a status pane. Create at most five
-active workers per team unless the operator selects another limit.
+This command creates a team record without a team tab. The fleet summary
+shows active assignments and groups inactive assignments by status. Create at
+most five active workers per team unless the operator selects another limit.
 
 ## Dispatch
 

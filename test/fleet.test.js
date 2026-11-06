@@ -139,13 +139,28 @@ test("failed dispatch retains assignment evidence for cleanup", async (t) => {
   assert.equal((await fleet.store.read()).assignments[0].status, "released");
 });
 
-test("lead dispatch uses the team tab", async (t) => {
-  const { fleet, taskCard } = await fixture(t);
+test("team creation adds no Herdr UI", async (t) => {
+  const { fleet, herdr } = await fixture(t);
+  const team = await fleet.createTeam({ name: "team-a" });
+  assert.equal(team.status, "active");
+  assert.equal(team.tabId, null);
+  assert.equal(team.summaryPaneId, null);
+  assert.equal(herdr.calls.filter((call) => call.name === "createTab").length, 0);
+  assert.equal(herdr.commands.length, 0);
+});
+
+test("lead dispatch splits the fleet summary pane", async (t) => {
+  const { fleet, herdr } = await fixture(t);
+  await fleet.init();
   await fleet.createTeam({ name: "team-a" });
   const lead = await fleet.dispatch({ team: "team-a", role: "lead" });
-  const team = (await fleet.store.read()).teams[0];
-  assert.equal(lead.tabId, team.tabId);
+  const registry = await fleet.store.read();
+  const team = registry.teams[0];
+  assert.equal(lead.tabId, "w1:t0");
   assert.equal(lead.taskCard, null);
-  assert.ok(team.summaryPaneId);
-  assert.ok(taskCard);
+  assert.equal(team.tabId, null);
+  assert.equal(team.summaryPaneId, null);
+  assert.equal(herdr.calls.filter((call) => call.name === "createTab").length, 0);
+  const splits = herdr.calls.filter((call) => call.name === "splitPane");
+  assert.equal(splits[1].value.paneId, registry.summary.paneId);
 });

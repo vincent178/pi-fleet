@@ -94,10 +94,11 @@ Pi-fleet uses the current Herdr workspace. It does not create a workspace.
 `pi-fleet init` keeps the coordinator in the current pane. It adds a fleet
 summary pane to the current tab.
 
-### Team tab
+### Team records
 
-`pi-fleet team create` creates one team tab. The tab contains a team status
-pane. A lead assignment adds a lead pane to this tab.
+`pi-fleet team create` creates no Herdr UI. The fleet summary shows active
+assignments with short task names. It groups inactive assignments by status.
+A lead assignment splits the fleet summary pane.
 
 ### Task tab
 

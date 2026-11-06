@@ -26,19 +26,41 @@ export function makeSnapshot(registry, teamName) {
   };
 }
 
-export function renderSnapshot(snapshot) {
-  const lines = [`Fleet updated: ${snapshot.updatedAt}`, ""];
-  if (snapshot.teams.length === 0) lines.push("No teams.");
-  for (const team of snapshot.teams) {
-    lines.push(`Team ${team.name}: ${team.activeWorkers}/${team.workerLimit} active workers [${team.status}]`);
-    const assignments = snapshot.assignments.filter((assignment) => assignment.team === team.name);
-    if (assignments.length === 0) lines.push("  No assignments.");
-    for (const assignment of assignments) {
-      const task = assignment.taskCard ? ` ${assignment.taskCard}` : "";
-      lines.push(`  ${assignment.name} ${assignment.role} ${assignment.status}${task}`);
-    }
-    lines.push("");
+function statusCounts(assignments) {
+  const counts = new Map();
+  for (const assignment of assignments) {
+    counts.set(assignment.status, (counts.get(assignment.status) ?? 0) + 1);
   }
+  return [...counts.entries()].map(([status, count]) => `${count} ${status}`).join(", ");
+}
+
+export function renderSnapshot(snapshot) {
+  const activeWorkers = snapshot.teams.reduce((total, team) => total + team.activeWorkers, 0);
+  const workerLabel = activeWorkers === 1 ? "worker" : "workers";
+  const lines = [`Fleet: ${activeWorkers} active ${workerLabel}`, `Updated: ${snapshot.updatedAt}`, ""];
+  if (snapshot.teams.length === 0) lines.push("No teams.");
+  const history = [];
+  let activeCount = 0;
+  for (const team of snapshot.teams) {
+    const assignments = snapshot.assignments.filter((assignment) => assignment.team === team.name);
+    const active = assignments.filter((assignment) => ACTIVE_STATUSES.has(assignment.status));
+    const inactive = assignments.filter((assignment) => !ACTIVE_STATUSES.has(assignment.status));
+    if (active.length > 0) {
+      activeCount += active.length;
+      lines.push(`${team.name}: ${team.activeWorkers}/${team.workerLimit} active workers`);
+      for (const assignment of active) {
+        lines.push(`  ${assignment.status.toUpperCase()} ${assignment.role} ${assignment.name}`);
+        if (assignment.taskCard) lines.push(`    ${assignment.taskCard.split("/").pop()}`);
+      }
+      lines.push("");
+    }
+    if (active.length === 0 || inactive.length > 0) {
+      const counts = statusCounts(inactive);
+      history.push(`  ${team.name}: ${counts || "no assignments"}`);
+    }
+  }
+  if (snapshot.teams.length > 0 && activeCount === 0) lines.push("No active assignments.", "");
+  if (history.length > 0) lines.push("History:", ...history, "");
   lines.push("Herdr settled states do not prove task completion.");
   return lines.join("\n");
 }
