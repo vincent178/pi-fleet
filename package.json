@@ -1,7 +1,7 @@
 {
   "name": "pi-fleet",
   "version": "0.1.0",
-  "description": "Fleet management for Herdr-hosted coding agents, with an optional pi adapter.",
+  "description": "Fleet management for pi agents through Herdr.",
   "type": "module",
   "keywords": [
     "pi-package",

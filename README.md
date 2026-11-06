@@ -1,23 +1,22 @@
 # pi-fleet
 
-**pi-fleet manages teams of coding agents through Herdr.**
+**pi-fleet manages teams of pi agents through Herdr.**
 
-The package contains a standalone Node.js CLI and an optional pi extension.
-The CLI owns teams, assignments, registry records, and Herdr layouts. The pi
-extension exposes those operations through `/fleet` and the `fleet` tool.
+The package contains a Node.js CLI and a pi extension. The CLI owns teams,
+assignments, registry records, and Herdr layouts. The pi extension exposes
+those operations through `/fleet` and the `fleet` tool.
 
-Pi-fleet does not manage task requirements or completion. A task workflow such
-as `over` retains those responsibilities.
+Pi-fleet does not manage task requirements or completion. The task workflow
+retains those responsibilities.
 
 ## Requirements
 
 - Node.js 22 or later
+- Pi
 - Herdr
 - A Herdr-managed pane with `HERDR_ENV=1`
-- Pi for the optional extension
 
-The CLI can manage every agent kind that Herdr supports. The agents do not need
-to use pi.
+The CLI starts pi agents through Herdr.
 
 ## Install
 
@@ -27,7 +26,7 @@ Install the pi package from a local path:
 pi install /path/to/pi-fleet
 ```
 
-For standalone CLI development, link the package:
+For CLI access during development, link the package:
 
 ```bash
 cd /path/to/pi-fleet
@@ -127,7 +126,7 @@ Global options precede the command. Run `pi-fleet help` for dispatch options.
 The `--no-ui` option creates records without Herdr layout changes. Worker and
 verifier dispatch still require Herdr panes.
 
-## Pi adapter
+## Pi extension
 
 The extension supports the same operations through `/fleet`:
 
@@ -210,19 +209,21 @@ Use `--cwd` to run an agent in an existing worktree.
 ## Architecture
 
 ```text
-over or another workflow
+      Pi coordinator
+            │
+     /fleet or fleet tool
             │
             ▼
-Optional pi adapter
+       Pi extension
             │
             ▼
-Standalone fleet core
+        Fleet CLI
             │
             ▼
           Herdr
             │
             ▼
-Herdr-supported coding agents
+         Pi agents
 ```
 
 The core uses Node.js built-ins. It has no runtime npm dependencies. Atomic
