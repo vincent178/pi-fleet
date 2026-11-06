@@ -46,9 +46,7 @@ export function renderSnapshot(snapshot) {
     const inactive = assignments.filter((assignment) => !ACTIVE_STATUSES.has(assignment.status));
     if (active.length > 0) {
       const assignmentLabel = active.length === 1 ? "assignment" : "assignments";
-      lines.push(
-        `${team.name}: ${active.length} active ${assignmentLabel} (${team.activeWorkers} of ${team.workerLimit} worker slots used)`,
-      );
+      lines.push(`${team.name}: ${active.length} active ${assignmentLabel}`);
       for (const assignment of active) {
         lines.push(`  ${assignment.status.toUpperCase()} ${assignment.role} ${assignment.name}`);
         if (assignment.taskCard) lines.push(`    ${assignment.taskCard.split("/").pop()}`);

@@ -43,7 +43,7 @@ test("summary prioritizes active assignments and compacts history", () => {
   });
 
   assert.match(output, /Fleet: 2 active assignments/);
-  assert.match(output, /team-a: 2 active assignments \(1 of 4 worker slots used\)/);
+  assert.match(output, /team-a: 2 active assignments\n/);
   assert.match(output, /WORKING worker w-team-a/);
   assert.match(output, /WORKING verifier v-team-a/);
   assert.match(output, /task-one\.md/);
@@ -56,7 +56,7 @@ test("summary prioritizes active assignments and compacts history", () => {
   assert.match(output, /team-c: no assignments/);
 });
 
-test("summary separates active verifiers from worker capacity", () => {
+test("summary counts active verifiers without worker capacity", () => {
   const output = renderSnapshot({
     updatedAt: "2026-11-06T07:00:00Z",
     teams: [{ name: "repo-cleanup", activeWorkers: 0, workerLimit: 4, status: "active" }],
@@ -72,10 +72,10 @@ test("summary separates active verifiers from worker capacity", () => {
   });
 
   assert.match(output, /Fleet: 1 active assignment/);
-  assert.match(output, /repo-cleanup: 1 active assignment \(0 of 4 worker slots used\)/);
+  assert.match(output, /repo-cleanup: 1 active assignment\n/);
   assert.match(output, /WORKING verifier web-lint-verifier-2/);
   assert.doesNotMatch(output, /0 active workers/);
-  assert.doesNotMatch(output, /0\/4 workers/);
+  assert.doesNotMatch(output, /worker slots|worker limit/);
 });
 
 test("summary handles no teams", () => {
