@@ -35,19 +35,18 @@ function statusCounts(assignments) {
 }
 
 export function renderSnapshot(snapshot) {
-  const activeWorkers = snapshot.teams.reduce((total, team) => total + team.activeWorkers, 0);
-  const workerLabel = activeWorkers === 1 ? "worker" : "workers";
-  const lines = [`Fleet: ${activeWorkers} active ${workerLabel}`, `Updated: ${snapshot.updatedAt}`, ""];
+  const activeAssignments = snapshot.assignments.filter((assignment) => ACTIVE_STATUSES.has(assignment.status)).length;
+  const assignmentLabel = activeAssignments === 1 ? "assignment" : "assignments";
+  const lines = [`Fleet: ${activeAssignments} active ${assignmentLabel}`, `Updated: ${snapshot.updatedAt}`, ""];
   if (snapshot.teams.length === 0) lines.push("No teams.");
   const history = [];
-  let activeCount = 0;
   for (const team of snapshot.teams) {
     const assignments = snapshot.assignments.filter((assignment) => assignment.team === team.name);
     const active = assignments.filter((assignment) => ACTIVE_STATUSES.has(assignment.status));
     const inactive = assignments.filter((assignment) => !ACTIVE_STATUSES.has(assignment.status));
     if (active.length > 0) {
-      activeCount += active.length;
-      lines.push(`${team.name}: ${team.activeWorkers}/${team.workerLimit} active workers`);
+      const assignmentLabel = active.length === 1 ? "assignment" : "assignments";
+      lines.push(`${team.name}: ${active.length} active ${assignmentLabel} (${team.activeWorkers}/${team.workerLimit} workers)`);
       for (const assignment of active) {
         lines.push(`  ${assignment.status.toUpperCase()} ${assignment.role} ${assignment.name}`);
         if (assignment.taskCard) lines.push(`    ${assignment.taskCard.split("/").pop()}`);
@@ -59,7 +58,7 @@ export function renderSnapshot(snapshot) {
       history.push(`  ${team.name}: ${counts || "no assignments"}`);
     }
   }
-  if (snapshot.teams.length > 0 && activeCount === 0) lines.push("No active assignments.", "");
+  if (snapshot.teams.length > 0 && activeAssignments === 0) lines.push("No active assignments.", "");
   if (history.length > 0) lines.push("History:", ...history, "");
   lines.push("Herdr settled states do not prove task completion.");
   return lines.join("\n");
