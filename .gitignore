@@ -1,0 +1,5 @@
+node_modules/
+.pi/fleet/
+coverage/
+*.log
+.DS_Store

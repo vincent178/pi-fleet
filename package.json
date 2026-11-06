@@ -1,0 +1,47 @@
+{
+  "name": "pi-fleet",
+  "version": "0.1.0",
+  "description": "Fleet management for Herdr-hosted coding agents, with an optional pi adapter.",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "herdr",
+    "agents"
+  ],
+  "license": "MIT",
+  "bin": {
+    "pi-fleet": "./src/cli.js"
+  },
+  "exports": {
+    ".": "./src/fleet.js",
+    "./herdr": "./src/herdr.js",
+    "./store": "./src/store.js"
+  },
+  "files": [
+    "src",
+    "extensions",
+    "skills",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test",
+    "check": "node --check src/cli.js && node --check src/fleet.js && node --check src/herdr.js && node --check src/store.js"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  }
+}
