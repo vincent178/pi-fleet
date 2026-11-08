@@ -134,9 +134,9 @@ async function processIsZombie(pid) {
   }
 }
 
-async function processMatchesOwner(pid, owner, getProcessStartIdentity, isZombie) {
+async function processMatchesOwner(pid, owner, getProcessStartIdentity, isZombie, killProcess) {
   try {
-    process.kill(pid, 0);
+    killProcess(pid, 0);
     if (await isZombie(pid)) return false;
     if (!owner.processStartId) return true;
     const identity = await getProcessStartIdentity(pid);
@@ -145,6 +145,15 @@ async function processMatchesOwner(pid, owner, getProcessStartIdentity, isZombie
   } catch (error) {
     if (error.code === "ESRCH" || error.code === "ENOENT") return false;
     if (error.code === "EPERM") return true;
+    if (error.code === 1) {
+      try {
+        killProcess(pid, 0);
+      } catch (recheckError) {
+        if (recheckError.code === "ESRCH") return false;
+        if (recheckError.code === "EPERM") return true;
+        throw recheckError;
+      }
+    }
     throw error;
   }
 }
@@ -176,6 +185,7 @@ export class RegistryStore {
       isProcessAlive,
       getProcessStartIdentity = processStartIdentity,
       isZombie = processIsZombie,
+      killProcess = process.kill,
       staleLockMs = STALE_LOCK_MS,
       lockTimeoutMs = LOCK_TIMEOUT_MS,
       lockRetryMs = 50,
@@ -192,9 +202,10 @@ export class RegistryStore {
     this.now = now;
     this.getProcessStartIdentity = getProcessStartIdentity;
     this.isZombie = isZombie;
+    this.killProcess = killProcess;
     this.isProcessAlive =
       isProcessAlive ??
-      ((pid, owner) => processMatchesOwner(pid, owner, this.getProcessStartIdentity, this.isZombie));
+      ((pid, owner) => processMatchesOwner(pid, owner, this.getProcessStartIdentity, this.isZombie, this.killProcess));
     this.staleLockMs = staleLockMs;
     this.lockTimeoutMs = lockTimeoutMs;
     this.lockRetryMs = lockRetryMs;

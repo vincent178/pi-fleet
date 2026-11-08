@@ -61,6 +61,7 @@ export class AssignmentCoordinator {
     this.active = false;
     this.pending = false;
     this.pendingMoves = [];
+    this.moveDestinations = new Set();
     this.watchedPaneIds = new Set();
     this.watchedTabIds = new Set();
     this.fileWatcher = null;
@@ -221,6 +222,7 @@ export class AssignmentCoordinator {
   isRegisteredMove(event) {
     if (isAssignmentEvent(event, this.watchedPaneIds, this.watchedTabIds)) return true;
     const previousPaneId = event.data?.previous_pane_id;
+    if (this.moveDestinations.has(previousPaneId)) return true;
     return this.pendingMoves.some((move) => {
       const data = move.data ?? {};
       return data.previous_pane_id === previousPaneId || data.pane?.pane_id === previousPaneId;
@@ -230,6 +232,8 @@ export class AssignmentCoordinator {
   receiveEvent(event) {
     if (!this.active) return;
     if (event?.event === "pane_moved" && this.isRegisteredMove(event)) {
+      if (event.data?.pane?.pane_id) this.moveDestinations.add(event.data.pane.pane_id);
+      if (event.data?.pane?.tab_id) this.moveDestinations.add(event.data.pane.tab_id);
       this.pendingMoves.push(event);
       void this.requestReconciliation();
       return;
@@ -309,6 +313,7 @@ export class AssignmentCoordinator {
       if (assignment.tabId) this.watchedTabIds.add(assignment.tabId);
     }
     this.watcher.setPaneIds([...this.watchedPaneIds]);
+    if (moveRefreshCompleted) this.moveDestinations.clear();
     const handled = new Set(delivery?.handledEventIds ?? []);
     const ignored = [];
     for (const event of events) {
@@ -376,6 +381,7 @@ export class AssignmentCoordinator {
   }
 
   closeResources() {
+    this.moveDestinations.clear();
     this.watcher.removeListener("ready", this.onReady);
     this.watcher.removeListener("event", this.onEvent);
     this.watcher.removeListener("warning", this.onWarningEvent);

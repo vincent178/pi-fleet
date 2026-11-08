@@ -266,6 +266,40 @@ test("a zombie registry mutex owner permits stale recovery", async (t) => {
   assert.equal(await ownerStore.releaseLock(stale), false);
 });
 
+test("an owner exit during the process probe permits stale recovery", async (t) => {
+  let now = Date.now();
+  const ownerStore = await storeFixture(t, {
+    now: () => now,
+    getProcessStartIdentity: async () => "original-process-start",
+    isZombie: async () => false,
+  });
+  const stale = await ownerStore.acquireLock();
+  now += 30_001;
+  let probes = 0;
+  const contender = new RegistryStore(ownerStore.root, {
+    now: () => now,
+    getProcessStartIdentity: async () => "reused-process-start",
+    isZombie: async () => {
+      const error = new Error("process probe failed");
+      error.code = 1;
+      throw error;
+    },
+    killProcess: () => {
+      probes += 1;
+      if (probes > 1) {
+        const error = new Error("process exited");
+        error.code = "ESRCH";
+        throw error;
+      }
+    },
+    lockTimeoutMs: 0,
+  });
+  const replacement = await contender.acquireLock();
+  assert.notEqual(replacement.ownerToken, stale.ownerToken);
+  assert.equal(await contender.releaseLock(replacement), true);
+  assert.equal(await ownerStore.releaseLock(stale), false);
+});
+
 test("a dead registry mutex owner permits recovery beyond the stale threshold", async (t) => {
   let now = Date.now();
   const ownerStore = await storeFixture(t, { now: () => now });

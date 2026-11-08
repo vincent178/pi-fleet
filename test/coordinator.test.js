@@ -911,6 +911,40 @@ test("chained moves remain ordered before pane subscriptions advance", async (t)
   assert.equal(coordinator.pendingMoves.length, 0);
 });
 
+test("a chained move arriving after reconciliation keeps its destination", async (t) => {
+  const { fleet, herdr, watcher, coordinator } = await fixture(t);
+  herdr.agents.delete("agent-a1");
+  const setPaneIds = watcher.setPaneIds.bind(watcher);
+  let emitted = false;
+  watcher.setPaneIds = (ids) => {
+    if (!emitted) {
+      emitted = true;
+      watcher.emit("event", {
+        event: "pane_moved",
+        data: {
+          previous_pane_id: "p-middle",
+          pane: { pane_id: "p-final", tab_id: "t-final", workspace_id: "w3" },
+        },
+      });
+    }
+    return setPaneIds(ids);
+  };
+  watcher.emit("event", {
+    event: "pane_moved",
+    data: {
+      previous_pane_id: "p-a1",
+      pane: { pane_id: "p-middle", tab_id: "t-middle", workspace_id: "w2" },
+    },
+  });
+  await coordinator.requestReconciliation();
+  await idle(coordinator);
+  const registry = await fleet.store.read();
+  assert.equal(registry.assignments[0].paneId, "p-final");
+  assert.equal(registry.assignments[0].tabId, "t-final");
+  assert.equal(registry.assignments[0].workspaceId, "w3");
+  assert.equal(registry.assignments[0].status, "missing");
+});
+
 test("events received during delivery are preserved and sent in order", async (t) => {
   let releaseFirst;
   let firstStarted;
