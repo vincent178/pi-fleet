@@ -398,26 +398,27 @@ export class RegistryStore {
       }
     }
     if (events.length > 0) {
-      await this.repairEventsTail();
-      await appendFile(this.eventsPath, events.map((event) => JSON.stringify(event)).join("\n") + "\n", "utf8");
+      const separator = (await this.repairEventsTail()) ? "\n" : "";
+      await appendFile(this.eventsPath, separator + events.map((event) => JSON.stringify(event)).join("\n") + "\n", "utf8");
     }
   }
 
   async repairEventsTail() {
     let source;
     try {
-      source = await readFile(this.eventsPath, "utf8");
+      source = await readFile(this.eventsPath);
     } catch (error) {
-      if (error.code === "ENOENT") return;
+      if (error.code === "ENOENT") return false;
       throw error;
     }
-    if (!source || source.endsWith("\n")) return;
-    const boundary = source.lastIndexOf("\n") + 1;
+    if (source.length === 0 || source[source.length - 1] === 10) return false;
+    const boundary = source.lastIndexOf(10) + 1;
     try {
-      JSON.parse(source.slice(boundary));
-      await appendFile(this.eventsPath, "\n", "utf8");
+      JSON.parse(source.subarray(boundary).toString("utf8"));
+      return true;
     } catch {
       await truncate(this.eventsPath, boundary);
+      return false;
     }
   }
 

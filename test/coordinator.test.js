@@ -293,7 +293,15 @@ test("persisted events still deliver when Herdr refresh fails", async (t) => {
 });
 
 test("an interrupted event-log tail does not block startup or later delivery", async (t) => {
-  const { fleet, files, deliveries, coordinator } = await fixture(t, { eventLog: '{"id":"interrupted"' });
+  const historical = JSON.stringify({
+    id: "unicode-history",
+    timestamp: "2026-01-01T00:00:00.000Z",
+    type: "team.created",
+    team: "team-é",
+  });
+  const { fleet, files, deliveries, coordinator } = await fixture(t, {
+    eventLog: `${historical}\n{"id":"interrupted"`,
+  });
   assert.equal(coordinator.active, true);
   assert.deepEqual(deliveries, []);
   await fleet.store.update((registry) => {
@@ -304,6 +312,7 @@ test("an interrupted event-log tail does not block startup or later delivery", a
   assert.equal(deliveries.length, 1);
   assert.equal(deliveries[0].message.details.event.to, "blocked");
   const events = await fleet.store.readEvents();
+  assert.equal(events[0].team, "team-é");
   assert.ok(events.some((event) => event.to === "blocked"));
 });
 

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, utimes } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
@@ -319,6 +319,24 @@ test("coordinator lease renewal exposes valid JSON to concurrent readers", async
   const current = await store.readCoordinatorLease();
   assert.equal(current.ownerId, lease.ownerId);
   assert.equal(Number.isFinite(current.expiresAt), true);
+});
+
+test("a valid unterminated event remains intact during the next append", async (t) => {
+  const store = await storeFixture(t);
+  const legacy = {
+    id: "evt_valid_tail",
+    timestamp: "2026-01-01T00:00:00.000Z",
+    type: "team.created",
+    team: "team-a",
+  };
+  await writeFile(store.eventsPath, JSON.stringify(legacy), "utf8");
+  await store.update((registry) => {
+    registry.assignments.push({ id: "asg_1", name: "w-a", team: "team-a", status: "pending" });
+  });
+  const events = await store.readEvents();
+  assert.equal(events.length, 2);
+  assert.equal(events[0].id, legacy.id);
+  assert.equal(events[1].type, "assignment.created");
 });
 
 test("assignment transitions append JSONL events", async (t) => {
