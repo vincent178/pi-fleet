@@ -237,9 +237,10 @@ stores creation records and assignment state transitions with stable event IDs.
 removes the lease file. Stale recovery removes it after a crash.
 
 `registry.lock` serializes registry writes and coordinator lease changes. The
-lock record contains the owner PID, a unique owner token, and the creation time.
-After 30 seconds, a contender checks the owner process. A live owner keeps the
-lock beyond that threshold. A dead owner permits stale recovery. Concurrent
+lock record contains the owner PID, process-start identity, a unique owner
+token, and the creation time. After 30 seconds, a contender checks both
+identities. A live owner keeps the lock beyond that threshold. A dead owner or
+a reused PID permits stale recovery. Concurrent
 recovery uses `proper-lockfile` to serialize recovery and writer admission.
 Owner-token checks prevent an old owner from removing a replacement lock.
 

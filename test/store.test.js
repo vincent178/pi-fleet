@@ -89,6 +89,7 @@ test("registry mutex records identify the process and a unique owner token", asy
   assert.equal(firstRecord.ownerToken, first.ownerToken);
   assert.match(firstRecord.ownerToken, /^[a-f0-9-]{36}$/);
   assert.equal(Number.isFinite(Date.parse(firstRecord.createdAt)), true);
+  assert.equal(typeof firstRecord.processStartId, "string");
   assert.equal(await store.releaseLock(first), true);
 
   const second = await store.acquireLock();
@@ -99,7 +100,7 @@ test("registry mutex records identify the process and a unique owner token", asy
 
 test("a live registry mutex owner excludes recovery beyond the stale threshold", async (t) => {
   let now = Date.now();
-  const options = { now: () => now, isProcessAlive: () => true };
+  const options = { now: () => now, getProcessStartIdentity: async () => "test-process-start" };
   const ownerStore = await storeFixture(t, options);
   const owner = await ownerStore.acquireLock();
   const original = JSON.parse(await readFile(ownerStore.lockPath, "utf8"));
@@ -108,6 +109,25 @@ test("a live registry mutex owner excludes recovery beyond the stale threshold",
   await assert.rejects(contender.acquireLock(), { code: "registry_lock_timeout" });
   assert.deepEqual(JSON.parse(await readFile(ownerStore.lockPath, "utf8")), original);
   assert.equal(await ownerStore.releaseLock(owner), true);
+});
+
+test("a reused PID with a different process-start identity permits recovery", async (t) => {
+  let now = Date.now();
+  const ownerStore = await storeFixture(t, {
+    now: () => now,
+    getProcessStartIdentity: async () => "original-process-start",
+  });
+  const stale = await ownerStore.acquireLock();
+  now += 30_001;
+  const contender = new RegistryStore(ownerStore.root, {
+    now: () => now,
+    getProcessStartIdentity: async () => "reused-process-start",
+    lockTimeoutMs: 0,
+  });
+  const replacement = await contender.acquireLock();
+  assert.notEqual(replacement.ownerToken, stale.ownerToken);
+  assert.equal(await contender.releaseLock(replacement), true);
+  assert.equal(await ownerStore.releaseLock(stale), false);
 });
 
 test("a dead registry mutex owner permits recovery beyond the stale threshold", async (t) => {

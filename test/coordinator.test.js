@@ -160,8 +160,10 @@ async function fixture(t, options = {}) {
     await coordinator.stop();
     await rm(root, { recursive: true, force: true });
   });
-  await coordinator.start();
-  await idle(coordinator);
+  if (!options.deferStart) {
+    await coordinator.start();
+    await idle(coordinator);
+  }
   return { root, fleet, herdr, watcher, files, deliveries, warnings, coordinator };
 }
 
@@ -222,6 +224,26 @@ test("synchronization returns monitoring failures without throwing", async () =>
     },
   };
   assert.equal(await synchronizeCoordinator(coordinator), failure);
+});
+
+test("concurrent starts await coordinator initialization", async (t) => {
+  const { coordinator } = await fixture(t, { initializeRegistry: false, deferStart: true });
+  const initialized = deferred();
+  coordinator.requestReconciliation = async () => {
+    await initialized.promise;
+  };
+  const first = coordinator.start();
+  await Promise.resolve();
+  const second = coordinator.start();
+  let secondSettled = false;
+  void second.then(() => {
+    secondSettled = true;
+  });
+  await delay(20);
+  assert.equal(secondSettled, false);
+  initialized.resolve();
+  assert.equal(await first, true);
+  assert.equal(await second, true);
 });
 
 test("startup initializes a missing registry and watches later CLI assignments", async (t) => {

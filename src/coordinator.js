@@ -83,12 +83,12 @@ export class AssignmentCoordinator {
   }
 
   async start() {
-    if (this.active) return true;
     if (this.startPromise) return this.startPromise;
+    if (this.active) return true;
     if (this.stopPromise) await this.stopPromise;
     if (this.drainPromise) await this.drainPromise;
-    if (this.active) return true;
     if (this.startPromise) return this.startPromise;
+    if (this.active) return true;
     const generation = ++this.generation;
     this.startPromise = this.startSession(generation);
     try {

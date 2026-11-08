@@ -1,4 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { open, mkdir, readFile, rename, stat, unlink, appendFile, truncate } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -12,6 +14,7 @@ const STALE_LOCK_MS = 30_000;
 const DELIVERY_VERSION = 1;
 const COORDINATOR_LEASE_VERSION = 1;
 const DEFAULT_COORDINATOR_LEASE_MS = 10_000;
+const execFileAsync = promisify(execFile);
 
 function canonicalValue(value) {
   if (Array.isArray(value)) return value.map(canonicalValue);
@@ -74,12 +77,29 @@ function leaseRecord(lease) {
   return { version: lease.version, ownerId: lease.ownerId, expiresAt: lease.expiresAt };
 }
 
-function processIsAlive(pid) {
+async function processStartIdentity(pid) {
+  try {
+    const source = await readFile(`/proc/${pid}/stat`, "utf8");
+    const fields = source.slice(source.lastIndexOf(")") + 2).split(" ");
+    if (fields[19]) return `proc:${fields[19]}`;
+  } catch (error) {
+    if (error.code !== "ENOENT" && error.code !== "ENOTDIR") throw error;
+  }
+  const { stdout } = await execFileAsync("ps", ["-p", String(pid), "-o", "lstart="], { timeout: 5000 });
+  const identity = stdout.trim();
+  if (!identity) {
+    throw new FleetError("The process start identity is unavailable.", "process_start_unavailable");
+  }
+  return `ps:${identity}`;
+}
+
+async function processMatchesOwner(pid, owner, getProcessStartIdentity) {
   try {
     process.kill(pid, 0);
-    return true;
+    if (!owner.processStartId) return true;
+    return (await getProcessStartIdentity(pid)) === owner.processStartId;
   } catch (error) {
-    if (error.code === "ESRCH") return false;
+    if (error.code === "ESRCH" || error.code === "ENOENT") return false;
     if (error.code === "EPERM") return true;
     throw error;
   }
@@ -109,7 +129,8 @@ export class RegistryStore {
     root,
     {
       now = Date.now,
-      isProcessAlive = processIsAlive,
+      isProcessAlive,
+      getProcessStartIdentity = processStartIdentity,
       staleLockMs = STALE_LOCK_MS,
       lockTimeoutMs = LOCK_TIMEOUT_MS,
       lockRetryMs = 50,
@@ -123,7 +144,9 @@ export class RegistryStore {
     this.lockPath = join(root, "registry.lock");
     this.recoveryPath = join(root, "registry.lock.recovery");
     this.now = now;
-    this.isProcessAlive = isProcessAlive;
+    this.getProcessStartIdentity = getProcessStartIdentity;
+    this.isProcessAlive =
+      isProcessAlive ?? ((pid, owner) => processMatchesOwner(pid, owner, this.getProcessStartIdentity));
     this.staleLockMs = staleLockMs;
     this.lockTimeoutMs = lockTimeoutMs;
     this.lockRetryMs = lockRetryMs;
@@ -172,17 +195,18 @@ export class RegistryStore {
     }
   }
 
-  newLockOwner() {
+  async newLockOwner() {
     return {
       version: REGISTRY_LOCK_VERSION,
       pid: process.pid,
       ownerToken: randomUUID(),
       createdAt: new Date(this.now()).toISOString(),
+      processStartId: await this.getProcessStartIdentity(process.pid),
     };
   }
 
   async createLock(path) {
-    const owner = this.newLockOwner();
+    const owner = await this.newLockOwner();
     const handle = await open(path, "wx");
     try {
       await handle.writeFile(`${JSON.stringify(owner)}\n`, "utf8");
@@ -214,7 +238,8 @@ export class RegistryStore {
         owner.pid <= 0 ||
         typeof owner.ownerToken !== "string" ||
         owner.ownerToken.length === 0 ||
-        !Number.isFinite(Date.parse(owner.createdAt))
+        !Number.isFinite(Date.parse(owner.createdAt)) ||
+        (owner.processStartId !== undefined && typeof owner.processStartId !== "string")
       ) {
         return null;
       }
