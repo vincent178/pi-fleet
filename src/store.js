@@ -128,9 +128,16 @@ export class RegistryStore {
     } catch (error) {
       if (error.code !== "registry_not_found") throw error;
     }
-    const registry = emptyRegistry();
-    await writeAtomic(this.registryPath, registry);
-    return registry;
+    return this.withLock(async () => {
+      try {
+        return await this.read();
+      } catch (error) {
+        if (error.code !== "registry_not_found") throw error;
+      }
+      const registry = emptyRegistry();
+      await writeAtomic(this.registryPath, registry);
+      return registry;
+    });
   }
 
   async read() {

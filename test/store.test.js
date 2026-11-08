@@ -22,6 +22,39 @@ async function storeFixture(t, options) {
   return store;
 }
 
+test("registry initialization preserves concurrently committed assignments", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "pi-fleet-store-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const first = new RegistryStore(root);
+  const read = first.read.bind(first);
+  const entered = deferred();
+  const resume = deferred();
+  let initialRead = true;
+  first.read = async (...args) => {
+    if (!initialRead) return read(...args);
+    initialRead = false;
+    let initialError;
+    try {
+      return await read(...args);
+    } catch (error) {
+      initialError = error;
+    }
+    entered.resolve();
+    await resume.promise;
+    throw initialError;
+  };
+  const initializing = first.init();
+  await entered.promise;
+  const second = new RegistryStore(root);
+  await second.init();
+  await second.update((registry) => {
+    registry.assignments.push({ id: "asg_concurrent", name: "w-concurrent", team: "team-a", status: "pending" });
+  });
+  resume.resolve();
+  await initializing;
+  assert.equal((await second.read()).assignments[0].id, "asg_concurrent");
+});
+
 test("registry writes survive concurrent updates", async (t) => {
   const store = await storeFixture(t);
   await Promise.all(
