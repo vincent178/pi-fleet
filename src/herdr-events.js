@@ -146,7 +146,12 @@ export class HerdrEventWatcher extends EventEmitter {
       return;
     }
     if (message.event) {
-      this.emit("event", typeof message.event === "string" ? message : message.event);
+      const event =
+        typeof message.event === "string"
+          ? { event: message.event, data: message.data }
+          : { ...message.event };
+      if (message.id !== undefined) event.id = message.id;
+      this.emit("event", event);
     }
   }
 

@@ -69,7 +69,7 @@ test("watcher subscribes and emits Herdr events", (t) => {
   );
   send(socket, { id: request.id, result: { type: "subscription_started" } });
   assert.equal(ready, 1);
-  const value = { event: "tab_closed", data: { type: "tab_closed", tab_id: "w1:t1" } };
+  const value = { id: "event-1", event: "tab_closed", data: { type: "tab_closed", tab_id: "w1:t1" } };
   send(socket, value);
   assert.deepEqual(event, value);
 });
@@ -88,7 +88,7 @@ test("watcher unwraps Herdr protocol event envelopes", (t) => {
     event: { event: "pane_agent_status_changed", data: { pane_id: "w1:p1" } },
   };
   send(socket, value);
-  assert.deepEqual(event, value.event);
+  assert.deepEqual(event, { ...value.event, id: value.id });
 });
 
 test("watcher reconnects and resubscribes after disconnect", async (t) => {

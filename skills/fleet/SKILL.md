@@ -54,7 +54,8 @@ worktrees.
 
 Use `pi-fleet status` for a fleet summary. Use `pi-fleet status --team team-a`
 for one team. The watching summary reconciles existing assignments through
-Herdr events. It uses a 30-second poll as a fallback.
+Herdr events. It uses a 30-second poll as a fallback. This poll belongs only
+to the summary. The extension coordinator does not poll.
 
 The pi extension watches all registered assignment panes in the background. New
 assignments join the watcher without an extension reload. Blocked, settled,

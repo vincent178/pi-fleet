@@ -46,6 +46,14 @@ test("no-op updates retain the registry timestamp", async (t) => {
   assert.equal(after.updatedAt, before.updatedAt);
 });
 
+test("registry mutex acquisition does not require an initialized registry file", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "pi-fleet-store-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const store = new RegistryStore(root);
+  const lock = await store.acquireLock();
+  assert.equal(await store.releaseLock(lock), true);
+});
+
 test("registry mutex records identify the process and a unique owner token", async (t) => {
   const store = await storeFixture(t);
   const first = await store.acquireLock();

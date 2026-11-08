@@ -241,7 +241,7 @@ export class RegistryStore {
   async acquireRecoveryGuard() {
     const retries = this.lockTimeoutMs <= 0 ? 0 : Math.ceil(this.lockTimeoutMs / this.lockRetryMs);
     try {
-      return await acquireFileLock(this.registryPath, {
+      return await acquireFileLock(this.root, {
         lockfilePath: this.recoveryPath,
         realpath: false,
         stale: 5000,
