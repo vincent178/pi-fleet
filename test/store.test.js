@@ -85,6 +85,46 @@ test("rollback restores the exact tail after event-log repair", async (t) => {
   assert.deepEqual(await readFile(store.eventsPath), original);
 });
 
+test("recovery discards events from an uncommitted transaction", async (t) => {
+  const store = await storeFixture(t);
+  const before = await store.read();
+  const eventTail = await store.readEventsTail();
+  const transaction = {
+    id: "tx-uncommitted",
+    eventTail: { boundary: eventTail.boundary, tail: eventTail.tail.toString("base64") },
+  };
+  await writeFile(store.transactionPath, JSON.stringify(transaction), "utf8");
+  const after = structuredClone(before);
+  after.lastTransactionId = transaction.id;
+  after.assignments.push({ id: "asg_1", name: "w-a", team: "team-a", status: "pending" });
+  await store.appendTransitions(before, after);
+  assert.equal((await store.readEvents()).length, 1);
+  await store.update(() => {});
+  assert.deepEqual(await store.readEvents(), []);
+  assert.deepEqual(await store.read(), before);
+  await assert.rejects(readFile(store.transactionPath), { code: "ENOENT" });
+});
+
+test("recovery preserves events from a committed transaction", async (t) => {
+  const store = await storeFixture(t);
+  const before = await store.read();
+  const eventTail = await store.readEventsTail();
+  const transaction = {
+    id: "tx-committed",
+    eventTail: { boundary: eventTail.boundary, tail: eventTail.tail.toString("base64") },
+  };
+  await writeFile(store.transactionPath, JSON.stringify(transaction), "utf8");
+  const after = structuredClone(before);
+  after.lastTransactionId = transaction.id;
+  after.assignments.push({ id: "asg_1", name: "w-a", team: "team-a", status: "pending" });
+  await store.appendTransitions(before, after);
+  await writeFile(store.registryPath, JSON.stringify(after), "utf8");
+  await store.update(() => {});
+  assert.equal((await store.readEvents()).length, 1);
+  assert.equal((await store.read()).lastTransactionId, transaction.id);
+  await assert.rejects(readFile(store.transactionPath), { code: "ENOENT" });
+});
+
 test("registry writes survive concurrent updates", async (t) => {
   const store = await storeFixture(t);
   await Promise.all(

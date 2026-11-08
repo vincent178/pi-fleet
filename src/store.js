@@ -155,6 +155,7 @@ export class RegistryStore {
     this.eventsPath = join(root, "events.jsonl");
     this.deliveryPath = join(root, "delivery.json");
     this.coordinatorLeasePath = join(root, "coordinator.json");
+    this.transactionPath = join(root, "transaction.json");
     this.lockPath = join(root, "registry.lock");
     this.recoveryPath = join(root, "registry.lock.recovery");
     this.now = now;
@@ -324,7 +325,16 @@ export class RegistryStore {
       let recovered = false;
       try {
         try {
-          return await this.createLock(this.lockPath);
+          const lock = await this.createLock(this.lockPath);
+          try {
+            await this.recoverRegistryTransaction();
+            return lock;
+          } catch (error) {
+            await lock.close();
+            const owner = await this.readLockOwner(this.lockPath);
+            if (owner?.ownerToken === lock.ownerToken) await unlink(this.lockPath);
+            throw error;
+          }
         } catch (error) {
           if (error.code !== "EEXIST") throw error;
           recovered = await this.removeStaleLock(this.lockPath);
@@ -376,13 +386,19 @@ export class RegistryStore {
       if (JSON.stringify(before) === JSON.stringify(after)) return result;
       after.updatedAt = new Date().toISOString();
       const eventTail = await this.readEventsTail();
+      const transaction = {
+        id: randomUUID(),
+        eventTail: { boundary: eventTail.boundary, tail: eventTail.tail.toString("base64") },
+      };
+      after.lastTransactionId = transaction.id;
+      await writeAtomic(this.transactionPath, transaction);
       try {
         await this.appendTransitions(before, after);
         await writeAtomic(this.registryPath, after);
       } catch (error) {
         try {
-          await truncate(this.eventsPath, eventTail.boundary);
-          await appendFile(this.eventsPath, eventTail.tail);
+          await this.restoreEventTail(eventTail);
+          await unlink(this.transactionPath);
         } catch (rollbackError) {
           if (rollbackError.code !== "ENOENT") {
             throw new FleetError("The registry event-log rollback failed.", "registry_rollback_failed", {
@@ -392,10 +408,52 @@ export class RegistryStore {
         }
         throw error;
       }
+      await unlink(this.transactionPath).catch((error) => {
+        if (error.code !== "ENOENT") return;
+      });
       return result;
     } finally {
       await this.releaseLock(lock);
     }
+  }
+
+  async restoreEventTail(eventTail) {
+    await truncate(this.eventsPath, eventTail.boundary);
+    await appendFile(this.eventsPath, eventTail.tail);
+  }
+
+  async recoverRegistryTransaction() {
+    let transaction;
+    try {
+      transaction = JSON.parse(await readFile(this.transactionPath, "utf8"));
+    } catch (error) {
+      if (error.code === "ENOENT") return;
+      throw new FleetError("The registry transaction is not valid.", "registry_transaction_invalid", {
+        cause: error,
+      });
+    }
+    if (
+      typeof transaction.id !== "string" ||
+      !Number.isSafeInteger(transaction.eventTail?.boundary) ||
+      typeof transaction.eventTail?.tail !== "string"
+    ) {
+      throw new FleetError("The registry transaction is not valid.", "registry_transaction_invalid");
+    }
+    let committed = false;
+    try {
+      committed = (await this.read()).lastTransactionId === transaction.id;
+    } catch (error) {
+      if (error.code !== "registry_not_found") throw error;
+    }
+    if (committed) {
+      await unlink(this.transactionPath);
+      return;
+    }
+    await this.restoreEventTail({
+      boundary: transaction.eventTail.boundary,
+      tail: Buffer.from(transaction.eventTail.tail, "base64"),
+    });
+    await unlink(this.transactionPath);
   }
 
   async appendTransitions(before, after) {

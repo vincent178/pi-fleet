@@ -227,7 +227,8 @@ The default registry directory is `.pi/fleet`. Use `--root` or
 ├── registry.json
 ├── events.jsonl
 ├── delivery.json
-└── coordinator.json
+├── coordinator.json
+└── transaction.json
 ```
 
 `registry.json` stores teams, tasks, assignments, and Herdr IDs. `events.jsonl`
@@ -237,6 +238,8 @@ event log keeps the latest 1,000 records plus every unhandled record. Delivery
 compaction retains IDs only for those records.
 `coordinator.json` stores the active coordinator lease and its expiry. Shutdown
 removes the lease file. Stale recovery removes it after a crash.
+`transaction.json` temporarily protects registry and event-log commits. Recovery
+removes uncommitted events or finalizes a committed transaction.
 
 `registry.lock` serializes registry writes and coordinator lease changes. The
 lock record contains the owner PID, process-start identity when available, a
