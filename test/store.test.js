@@ -259,7 +259,7 @@ test("concurrent stale recovery permits one coordinator acquisition", async (t) 
     await Promise.all(leases.map((lease, index) => stores[index].releaseCoordinatorLease(lease)));
   });
   await delay(55);
-  leases = await Promise.all(stores.map((item) => item.acquireCoordinatorLease({ leaseMs: 500 })));
+  leases = await Promise.all(stores.map((item) => item.acquireCoordinatorLease({ leaseMs: 5000 })));
   const winners = leases.filter(Boolean);
   assert.equal(winners.length, 1);
   assert.equal(await store.ownsCoordinatorLease(stale), false);
