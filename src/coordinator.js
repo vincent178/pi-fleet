@@ -266,10 +266,7 @@ export class AssignmentCoordinator {
       }
       await this.fleet.status();
     } catch (error) {
-      if (moves.length > 0) {
-        this.pendingMoves.unshift(...moves);
-        throw error;
-      }
+      if (moves.length > 0) this.pendingMoves.unshift(...moves);
       this.onWarning(error);
       await delay(50);
       try {

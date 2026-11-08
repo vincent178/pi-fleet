@@ -852,8 +852,9 @@ test("pane moves reconcile before the next assignment refresh", async (t) => {
 });
 
 test("failed move reconciliation retains the move for retry after agent exit", async (t) => {
-  const { fleet, herdr, watcher, warnings, coordinator } = await fixture(t);
+  const { fleet, herdr, watcher, deliveries, warnings, coordinator } = await fixture(t);
   herdr.agents.delete("agent-a1");
+  await appendEvents(fleet, [changed("unrelated-blocked", "a1", "blocked")]);
   const status = fleet.status.bind(fleet);
   let failRefresh = true;
   fleet.status = async (...args) => {
@@ -872,6 +873,7 @@ test("failed move reconciliation retains the move for retry after agent exit", a
   });
   await idle(coordinator);
   assert.equal(coordinator.pendingMoves.length, 1);
+  assert.ok(deliveries.some(({ message }) => message.details.eventId === "unrelated-blocked"));
   assert.ok(warnings.some((error) => error.message === "refresh failed"));
   await coordinator.requestReconciliation();
   await idle(coordinator);
