@@ -94,7 +94,10 @@ Herdr `idle` and `done` states become `settled` in the registry. These states
 do not prove task completion. Use task artifacts and independent verification
 as proof.
 
-Inspect Herdr output before a prompt retry. Never resubmit a prompt blindly.
+Inspect Herdr output before a prompt retry. If dispatch fails because a new
+pane shell is not ready, inspect the pane. Confirm that Herdr did not send the
+task prompt. Retry agent startup with a bounded delay. Never resubmit a prompt
+blindly.
 
 ## Release
 
