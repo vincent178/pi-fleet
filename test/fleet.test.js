@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Fleet } from "../src/fleet.js";
@@ -392,6 +392,23 @@ test("active release requires force", async (t) => {
   await assert.rejects(fleet.release(assignment.id), { code: "assignment_active" });
   const released = await fleet.release(assignment.id, { force: true });
   assert.equal(released.status, "released");
+});
+
+test("events recovers uncommitted transactions before reading", async (t) => {
+  const { fleet } = await fixture(t);
+  const before = await fleet.store.read();
+  const eventTail = await fleet.store.readEventsTail();
+  const transaction = {
+    id: "tx-events-read",
+    eventTail: { boundary: eventTail.boundary, tail: eventTail.tail.toString("base64") },
+  };
+  await writeFile(fleet.store.transactionPath, JSON.stringify(transaction), "utf8");
+  const after = structuredClone(before);
+  after.lastTransactionId = transaction.id;
+  after.assignments.push({ id: "asg_uncommitted", name: "w-a", team: "team-a", status: "pending" });
+  await fleet.store.appendTransitions(before, after);
+  assert.deepEqual(await fleet.events(), []);
+  await assert.rejects(readFile(fleet.store.transactionPath), { code: "ENOENT" });
 });
 
 test("wait returns a blocked assignment after a Herdr state change", async (t) => {
