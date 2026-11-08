@@ -583,10 +583,12 @@ export class RegistryStore {
     try {
       if (await this.readDelivery()) return false;
       const events = await this.readEvents();
+      const handledEventIds = new Set(events.map(registryEventId));
       await writeAtomic(this.deliveryPath, {
         version: DELIVERY_VERSION,
-        handledEventIds: [...new Set(events.map(registryEventId))],
+        handledEventIds: [...handledEventIds],
       });
+      if (handledEventIds.size > DELIVERY_HISTORY_LIMIT * 2) await this.compactDelivery(handledEventIds);
       return true;
     } finally {
       await this.releaseLock(lock);
@@ -608,13 +610,15 @@ export class RegistryStore {
   }
 
   async markEventsHandled(eventIds) {
-    if (eventIds.length === 0) return;
     const lock = await this.acquireLock();
     try {
       const current = (await this.readDelivery()) ?? { version: DELIVERY_VERSION, handledEventIds: [] };
       const handledEventIds = new Set(current.handledEventIds);
       for (const id of eventIds) handledEventIds.add(id);
-      if (handledEventIds.size === current.handledEventIds.length) return;
+      if (handledEventIds.size === current.handledEventIds.length) {
+        if (handledEventIds.size > DELIVERY_HISTORY_LIMIT * 2) await this.compactDelivery(handledEventIds);
+        return;
+      }
       await writeAtomic(this.deliveryPath, {
         version: DELIVERY_VERSION,
         handledEventIds: [...handledEventIds],

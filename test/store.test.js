@@ -505,6 +505,25 @@ test("delivery compaction retains recent history and pending events", async (t) 
   assert.equal((await store.readDelivery()).handledEventIds.length, 1000);
 });
 
+test("no-op delivery handling compacts oversized existing state", async (t) => {
+  const store = await storeFixture(t);
+  const events = Array.from({ length: 2001 }, (_, index) => ({
+    id: `evt_existing_${index}`,
+    timestamp: "2026-01-01T00:00:00.000Z",
+    type: "team.created",
+    team: `team-${index}`,
+  }));
+  await writeFile(store.eventsPath, `${events.map((event) => JSON.stringify(event)).join("\n")}\n`, "utf8");
+  await writeFile(
+    store.deliveryPath,
+    JSON.stringify({ version: 1, handledEventIds: events.map((event) => event.id) }),
+    "utf8",
+  );
+  await store.markEventsHandled([]);
+  assert.equal((await store.readEvents()).length, 1000);
+  assert.equal((await store.readDelivery()).handledEventIds.length, 1000);
+});
+
 test("assignment transitions append JSONL events", async (t) => {
   const store = await storeFixture(t);
   await store.update((registry) => {
