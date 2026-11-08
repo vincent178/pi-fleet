@@ -375,8 +375,27 @@ export class RegistryStore {
       const result = await mutator(after);
       if (JSON.stringify(before) === JSON.stringify(after)) return result;
       after.updatedAt = new Date().toISOString();
-      await writeAtomic(this.registryPath, after);
-      await this.appendTransitions(before, after);
+      let eventLogSize = 0;
+      try {
+        eventLogSize = (await stat(this.eventsPath)).size;
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+      }
+      try {
+        await this.appendTransitions(before, after);
+        await writeAtomic(this.registryPath, after);
+      } catch (error) {
+        try {
+          await truncate(this.eventsPath, eventLogSize);
+        } catch (rollbackError) {
+          if (rollbackError.code !== "ENOENT") {
+            throw new FleetError("The registry event-log rollback failed.", "registry_rollback_failed", {
+              cause: rollbackError,
+            });
+          }
+        }
+        throw error;
+      }
       return result;
     } finally {
       await this.releaseLock(lock);

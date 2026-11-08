@@ -108,11 +108,20 @@ export class AssignmentCoordinator {
       await this.releaseLease();
       return false;
     }
+    if (!(await this.store.ownsCoordinatorLease(this.lease))) {
+      await this.releaseLease();
+      return false;
+    }
     this.active = true;
     this.startLeaseRenewal(generation);
     try {
       await this.store.initializeDelivery();
       if (generation !== this.generation) {
+        await this.releaseLease();
+        return false;
+      }
+      if (!(await this.store.ownsCoordinatorLease(this.lease))) {
+        this.deactivate();
         await this.releaseLease();
         return false;
       }
@@ -123,7 +132,7 @@ export class AssignmentCoordinator {
       this.fileWatcher.on("error", this.onWarningEvent);
       this.watcher.start();
       await this.requestReconciliation();
-      return true;
+      return this.active;
     } catch (error) {
       this.deactivate();
       await this.releaseLease();
@@ -249,9 +258,13 @@ export class AssignmentCoordinator {
       this.onWarning(error);
     }
     if (!(await this.confirmLease())) return;
-    const events = await this.store.readEvents();
-    const registry = await this.store.read();
-    const delivery = await this.store.readDelivery();
+    const { events, registry, delivery } = await this.store.withLock(async () => {
+      return {
+        events: await this.store.readEvents(),
+        registry: await this.store.read(),
+        delivery: await this.store.readDelivery(),
+      };
+    });
     if (!(await this.confirmLease())) return;
     this.watchedPaneIds.clear();
     this.watchedTabIds.clear();

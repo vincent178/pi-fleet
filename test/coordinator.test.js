@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -224,6 +224,18 @@ test("synchronization returns monitoring failures without throwing", async () =>
     },
   };
   assert.equal(await synchronizeCoordinator(coordinator), failure);
+});
+
+test("startup does not install watchers after lease ownership is lost", async (t) => {
+  const { fleet, watcher, coordinator } = await fixture(t, { initializeRegistry: false, deferStart: true });
+  const initialize = fleet.store.initializeDelivery.bind(fleet.store);
+  fleet.store.initializeDelivery = async () => {
+    await initialize();
+    await unlink(fleet.store.coordinatorLeasePath);
+  };
+  assert.equal(await coordinator.start(), false);
+  assert.equal(coordinator.active, false);
+  assert.equal(watcher.startCalls, 0);
 });
 
 test("concurrent starts await coordinator initialization", async (t) => {

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { join } from "node:path";
@@ -48,6 +48,23 @@ test("registry initialization preserves concurrently committed assignments", asy
   resume.resolve();
   await initializing;
   assert.equal((await second.read()).assignments[0].id, "asg_concurrent");
+});
+
+test("an event append failure rolls back the registry and partial log", async (t) => {
+  const store = await storeFixture(t);
+  const before = await store.read();
+  store.appendTransitions = async () => {
+    await appendFile(store.eventsPath, '{"id":"partial"}\n', "utf8");
+    throw new Error("event append failed");
+  };
+  await assert.rejects(
+    store.update((registry) => {
+      registry.assignments.push({ id: "asg_1", name: "w-a", team: "team-a", status: "pending" });
+    }),
+    /event append failed/,
+  );
+  assert.deepEqual(await store.read(), before);
+  assert.deepEqual(await store.readEvents(), []);
 });
 
 test("registry writes survive concurrent updates", async (t) => {
