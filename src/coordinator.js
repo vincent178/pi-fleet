@@ -1,4 +1,5 @@
 import { watch } from "node:fs";
+import { setTimeout as delay } from "node:timers/promises";
 import { FleetError } from "./errors.js";
 import { isAssignmentEvent, isRegisteredDiscovery } from "./herdr-events.js";
 import { registryEventId } from "./store.js";
@@ -83,10 +84,8 @@ export class AssignmentCoordinator {
   }
 
   async start() {
-    if (this.startPromise) {
-      const started = await this.startPromise;
-      if (started || this.active) return true;
-    }
+    if (this.startPromise) await this.startPromise;
+    if (this.stopPromise) await this.stopPromise;
     if (this.active) return true;
     if (this.stopPromise) await this.stopPromise;
     if (this.drainPromise) await this.drainPromise;
@@ -272,6 +271,12 @@ export class AssignmentCoordinator {
         throw error;
       }
       this.onWarning(error);
+      await delay(50);
+      try {
+        await this.fleet.status();
+      } catch (retryError) {
+        this.onWarning(retryError);
+      }
     }
     if (!(await this.confirmLease())) return;
     const { events, registry, delivery } = await this.store.withLock(async () => {

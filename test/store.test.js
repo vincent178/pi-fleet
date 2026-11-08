@@ -192,6 +192,27 @@ test("registry mutex records identify the process and a unique owner token", asy
   assert.equal(await store.releaseLock(second), true);
 });
 
+test("process-start identity remains stable across locale and timezone changes", async (t) => {
+  const store = await storeFixture(t);
+  const first = await store.acquireLock();
+  const firstIdentity = JSON.parse(await readFile(store.lockPath, "utf8")).processStartId;
+  assert.equal(await store.releaseLock(first), true);
+  const previous = { TZ: process.env.TZ, LC_ALL: process.env.LC_ALL };
+  try {
+    process.env.TZ = "Pacific/Honolulu";
+    process.env.LC_ALL = "fr_FR.UTF-8";
+    const second = await store.acquireLock();
+    const secondIdentity = JSON.parse(await readFile(store.lockPath, "utf8")).processStartId;
+    assert.equal(secondIdentity, firstIdentity);
+    assert.equal(await store.releaseLock(second), true);
+  } finally {
+    if (previous.TZ === undefined) delete process.env.TZ;
+    else process.env.TZ = previous.TZ;
+    if (previous.LC_ALL === undefined) delete process.env.LC_ALL;
+    else process.env.LC_ALL = previous.LC_ALL;
+  }
+});
+
 test("a live registry mutex owner excludes recovery beyond the stale threshold", async (t) => {
   let now = Date.now();
   const options = { now: () => now, getProcessStartIdentity: async () => "test-process-start" };

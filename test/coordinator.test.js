@@ -278,6 +278,22 @@ test("restart during cancelled startup starts a new session", async (t) => {
   assert.equal(coordinator.active, true);
 });
 
+test("a completed startup cannot bypass a pending shutdown", async (t) => {
+  const { coordinator } = await fixture(t);
+  const shutdown = deferred();
+  coordinator.startPromise = Promise.resolve(true);
+  coordinator.stopPromise = shutdown.promise;
+  let settled = false;
+  const restarting = coordinator.start().then((result) => {
+    settled = true;
+    return result;
+  });
+  await delay(20);
+  assert.equal(settled, false);
+  shutdown.resolve();
+  assert.equal(await restarting, true);
+});
+
 test("concurrent starts await coordinator initialization", async (t) => {
   const { coordinator } = await fixture(t, { initializeRegistry: false, deferStart: true });
   const initialized = deferred();
@@ -342,6 +358,22 @@ test("persisted events still deliver when Herdr refresh fails", async (t) => {
   await idle(coordinator);
   assert.deepEqual(deliveries.map(({ message }) => message.details.eventId), ["failed-dispatch"]);
   assert.ok(warnings.some((error) => error.message === "Herdr unavailable"));
+});
+
+test("persisted events survive a retryable Herdr refresh failure", async (t) => {
+  const { fleet, files, deliveries, coordinator } = await fixture(t);
+  await appendEvents(fleet, [changed("retryable-refresh", "a1", "blocked")]);
+  const status = fleet.status.bind(fleet);
+  let calls = 0;
+  fleet.status = async (...args) => {
+    calls += 1;
+    if (calls === 1) throw new Error("temporary Herdr failure");
+    return status(...args);
+  };
+  files[0].signal();
+  await idle(coordinator);
+  assert.equal(calls, 2);
+  assert.deepEqual(deliveries.map(({ message }) => message.details.eventId), ["retryable-refresh"]);
 });
 
 test("an interrupted event-log tail does not block startup or later delivery", async (t) => {

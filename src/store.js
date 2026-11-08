@@ -103,7 +103,10 @@ async function processStartIdentity(pid) {
   }
   let stdout;
   try {
-    ({ stdout } = await execFileAsync("ps", ["-p", String(pid), "-o", "lstart="], { timeout: 5000 }));
+    ({ stdout } = await execFileAsync("ps", ["-p", String(pid), "-o", "lstart="], {
+      timeout: 5000,
+      env: { ...process.env, LC_ALL: "C", TZ: "UTC" },
+    }));
   } catch (error) {
     if (error.code === "ENOENT") return null;
     throw error;
