@@ -115,9 +115,26 @@ async function processStartIdentity(pid) {
   return `ps:${identity}`;
 }
 
-async function processMatchesOwner(pid, owner, getProcessStartIdentity) {
+async function processIsZombie(pid) {
+  try {
+    const source = await readFile(`/proc/${pid}/stat`, "utf8");
+    return source.slice(source.lastIndexOf(")") + 2).split(" ")[0] === "Z";
+  } catch (error) {
+    if (error.code !== "ENOENT" && error.code !== "ENOTDIR") throw error;
+  }
+  try {
+    const { stdout } = await execFileAsync("ps", ["-p", String(pid), "-o", "stat="], { timeout: 5000 });
+    return stdout.trim().includes("Z");
+  } catch (error) {
+    if (error.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+async function processMatchesOwner(pid, owner, getProcessStartIdentity, isZombie) {
   try {
     process.kill(pid, 0);
+    if (await isZombie(pid)) return false;
     if (!owner.processStartId) return true;
     const identity = await getProcessStartIdentity(pid);
     if (!identity) return true;
@@ -155,6 +172,7 @@ export class RegistryStore {
       now = Date.now,
       isProcessAlive,
       getProcessStartIdentity = processStartIdentity,
+      isZombie = processIsZombie,
       staleLockMs = STALE_LOCK_MS,
       lockTimeoutMs = LOCK_TIMEOUT_MS,
       lockRetryMs = 50,
@@ -170,8 +188,10 @@ export class RegistryStore {
     this.recoveryPath = join(root, "registry.lock.recovery");
     this.now = now;
     this.getProcessStartIdentity = getProcessStartIdentity;
+    this.isZombie = isZombie;
     this.isProcessAlive =
-      isProcessAlive ?? ((pid, owner) => processMatchesOwner(pid, owner, this.getProcessStartIdentity));
+      isProcessAlive ??
+      ((pid, owner) => processMatchesOwner(pid, owner, this.getProcessStartIdentity, this.isZombie));
     this.staleLockMs = staleLockMs;
     this.lockTimeoutMs = lockTimeoutMs;
     this.lockRetryMs = lockRetryMs;

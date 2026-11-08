@@ -92,6 +92,7 @@ export default function (pi: ExtensionAPI) {
 			const message = error instanceof Error ? error.message : String(error);
 			ctx.ui.notify(`Fleet watcher: ${message}`, "warning");
 		}
+		if (process.env.HERDR_ENV !== "1") return;
 		const fleet = new Fleet({ cwd: ctx.cwd, root: join(ctx.cwd, CONFIG_DIR_NAME, "fleet") });
 		const watcher = new HerdrEventWatcher({
 			socketPath: process.env.HERDR_SOCKET_PATH ?? join(homedir(), ".config", "herdr", "herdr.sock"),

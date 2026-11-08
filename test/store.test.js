@@ -224,6 +224,27 @@ test("a reused PID with a different process-start identity permits recovery", as
   assert.equal(await ownerStore.releaseLock(stale), false);
 });
 
+test("a zombie registry mutex owner permits stale recovery", async (t) => {
+  let now = Date.now();
+  const ownerStore = await storeFixture(t, {
+    now: () => now,
+    getProcessStartIdentity: async () => "original-process-start",
+    isZombie: async () => false,
+  });
+  const stale = await ownerStore.acquireLock();
+  now += 30_001;
+  const contender = new RegistryStore(ownerStore.root, {
+    now: () => now,
+    getProcessStartIdentity: async () => "reused-process-start",
+    isZombie: async () => true,
+    lockTimeoutMs: 0,
+  });
+  const replacement = await contender.acquireLock();
+  assert.notEqual(replacement.ownerToken, stale.ownerToken);
+  assert.equal(await contender.releaseLock(replacement), true);
+  assert.equal(await ownerStore.releaseLock(stale), false);
+});
+
 test("a dead registry mutex owner permits recovery beyond the stale threshold", async (t) => {
   let now = Date.now();
   const ownerStore = await storeFixture(t, { now: () => now });
