@@ -31,6 +31,16 @@ export function formatAssignmentMessage(event, assignment) {
   ].join("\n");
 }
 
+export async function synchronizeCoordinator(coordinator) {
+  if (!coordinator) return null;
+  try {
+    if (await coordinator.start()) await coordinator.requestReconciliation();
+    return null;
+  } catch (error) {
+    return error;
+  }
+}
+
 export class AssignmentCoordinator {
   constructor({
     fleet,

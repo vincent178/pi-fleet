@@ -5,7 +5,7 @@ import { appendFile, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { AssignmentCoordinator } from "../src/coordinator.js";
+import { AssignmentCoordinator, synchronizeCoordinator } from "../src/coordinator.js";
 import { Fleet } from "../src/fleet.js";
 import { HerdrEventWatcher } from "../src/herdr-events.js";
 import { RegistryStore } from "../src/store.js";
@@ -195,6 +195,33 @@ async function reload(t, current, options = {}) {
   await current.coordinator.stop();
   return runtime(t, current, options);
 }
+
+test("synchronization starts and reconciles an active coordinator", async () => {
+  let starts = 0;
+  let reconciliations = 0;
+  const coordinator = {
+    start: async () => {
+      starts += 1;
+      return true;
+    },
+    requestReconciliation: async () => {
+      reconciliations += 1;
+    },
+  };
+  assert.equal(await synchronizeCoordinator(coordinator), null);
+  assert.equal(starts, 1);
+  assert.equal(reconciliations, 1);
+});
+
+test("synchronization returns monitoring failures without throwing", async () => {
+  const failure = new Error("monitoring unavailable");
+  const coordinator = {
+    start: async () => {
+      throw failure;
+    },
+  };
+  assert.equal(await synchronizeCoordinator(coordinator), failure);
+});
 
 test("startup initializes a missing registry and watches later CLI assignments", async (t) => {
   const { fleet, herdr, files, watcher, coordinator } = await fixture(t, { initializeRegistry: false });

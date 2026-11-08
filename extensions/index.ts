@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { splitCommandLine } from "../src/args.js";
-import { AssignmentCoordinator } from "../src/coordinator.js";
+import { AssignmentCoordinator, synchronizeCoordinator } from "../src/coordinator.js";
 import { Fleet } from "../src/fleet.js";
 import { HerdrEventWatcher } from "../src/herdr-events.js";
 
@@ -61,11 +61,6 @@ function toolArguments(params: Record<string, unknown>): string[] {
 export default function (pi: ExtensionAPI) {
 	let coordinator: AssignmentCoordinator | null = null;
 
-	async function synchronizeCoordinator() {
-		if (!coordinator) return;
-		if (await coordinator.start()) await coordinator.requestReconciliation();
-	}
-
 	async function execute(args: string[], cwd: string, signal?: AbortSignal, json = false): Promise<FleetResult> {
 		const root = join(cwd, CONFIG_DIR_NAME, "fleet");
 		const globalArgs = [CLI_PATH, "--root", root];
@@ -79,7 +74,8 @@ export default function (pi: ExtensionAPI) {
 			try {
 				const args = source.trim() ? splitCommandLine(source) : ["help"];
 				const result = await execute(args, ctx.cwd);
-				if (result.code === 0) await synchronizeCoordinator();
+				const warning = result.code === 0 ? await synchronizeCoordinator(coordinator) : null;
+				if (warning) ctx.ui.notify(`Fleet watcher: ${warning.message}`, "warning");
 				ctx.ui.notify(outputText(result), result.code === 0 ? "info" : "error");
 			} catch (error) {
 				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
@@ -145,7 +141,8 @@ export default function (pi: ExtensionAPI) {
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			const args = toolArguments(params);
 			const result = await execute(args, ctx.cwd, signal, true);
-			if (result.code === 0) await synchronizeCoordinator();
+			const warning = result.code === 0 ? await synchronizeCoordinator(coordinator) : null;
+			if (warning) ctx.ui.notify(`Fleet watcher: ${warning.message}`, "warning");
 			return {
 				content: [{ type: "text", text: outputText(result) }],
 				details: result,
