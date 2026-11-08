@@ -84,12 +84,7 @@ export class AssignmentCoordinator {
   }
 
   async startSession(generation) {
-    try {
-      await this.store.read();
-    } catch (error) {
-      if (error.code === "registry_not_found") return false;
-      throw error;
-    }
+    await this.store.init();
     if (generation !== this.generation) return false;
     await this.releaseLease();
     this.lease = await this.store.acquireCoordinatorLease({ leaseMs: this.leaseDurationMs });
@@ -233,7 +228,11 @@ export class AssignmentCoordinator {
     for (const event of moves) {
       await this.fleet.reconcileEvent(event);
     }
-    await this.fleet.status();
+    try {
+      await this.fleet.status();
+    } catch (error) {
+      this.onWarning(error);
+    }
     if (!(await this.confirmLease())) return;
     const events = await this.store.readEvents();
     const registry = await this.store.read();

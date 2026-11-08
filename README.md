@@ -201,8 +201,10 @@ A later reconciliation or reload may then duplicate that message. Pi
 delivery. Each message tells Over to use task-card state and Evidence for
 idempotent handling.
 
-The first watcher startup establishes a baseline. Existing history does not
-wake the coordinator. Internal Fleet event messages use `display: false`.
+The extension creates an empty registry when needed. `pi-fleet init` still
+creates the summary pane. The first watcher startup establishes a baseline.
+Existing history does not wake the coordinator. Internal Fleet event messages
+use `display: false`.
 
 One registry has one active assignment coordinator. The coordinator acquires
 `coordinator.json` through exclusive file creation. While that lease is active,

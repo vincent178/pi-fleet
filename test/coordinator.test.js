@@ -123,22 +123,24 @@ async function fixture(t, options = {}) {
   }
   const fleet = new Fleet({ cwd: root, root: join(root, "fleet"), herdr });
   if (options.storeOptions) fleet.store = new RegistryStore(fleet.root, options.storeOptions);
-  await fleet.store.init();
-  await fleet.store.update((registry) => {
-    const teamNames = new Set(assignments.map((item) => item.team));
-    registry.teams = [...teamNames].map((name) => ({
-      name,
-      workerLimit: 5,
-      status: "active",
-      workspaceId: null,
-      tabId: null,
-      summaryPaneId: null,
-      ownsTab: false,
-      createdAt: "2026-01-01T00:00:00.000Z",
-      error: null,
-    }));
-    registry.assignments = assignments;
-  });
+  if (options.initializeRegistry !== false) {
+    await fleet.store.init();
+    await fleet.store.update((registry) => {
+      const teamNames = new Set(assignments.map((item) => item.team));
+      registry.teams = [...teamNames].map((name) => ({
+        name,
+        workerLimit: 5,
+        status: "active",
+        workspaceId: null,
+        tabId: null,
+        summaryPaneId: null,
+        ownsTab: false,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        error: null,
+      }));
+      registry.assignments = assignments;
+    });
+  }
   if (options.events) await appendEvents(fleet, options.events);
   const watcher = options.watcher ?? new FakeWatcher();
   const files = [];
@@ -200,6 +202,52 @@ async function reload(t, current, options = {}) {
   await current.coordinator.stop();
   return runtime(t, current, options);
 }
+
+test("startup initializes a missing registry and watches later CLI assignments", async (t) => {
+  const { fleet, herdr, files, watcher, coordinator } = await fixture(t, { initializeRegistry: false });
+  assert.equal(coordinator.active, true);
+  assert.deepEqual((await fleet.store.read()).assignments, []);
+  const cliAssignment = assignment("cli");
+  herdr.agents.set(cliAssignment.name, {
+    name: cliAssignment.name,
+    agent: "pi",
+    agent_status: "working",
+    pane_id: cliAssignment.paneId,
+    tab_id: cliAssignment.tabId,
+    workspace_id: cliAssignment.workspaceId,
+  });
+  await fleet.store.update((registry) => {
+    registry.teams = [
+      {
+        name: "team-a",
+        workerLimit: 5,
+        status: "active",
+        workspaceId: null,
+        tabId: null,
+        summaryPaneId: null,
+        ownsTab: false,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        error: null,
+      },
+    ];
+    registry.assignments = [cliAssignment];
+  });
+  files[0].signal("registry.json");
+  await idle(coordinator);
+  assert.deepEqual(watcher.paneIds, ["p-cli"]);
+});
+
+test("persisted events still deliver when Herdr refresh fails", async (t) => {
+  const { fleet, files, deliveries, warnings, coordinator } = await fixture(t);
+  await appendEvents(fleet, [changed("failed-dispatch", "a1", "failed")]);
+  fleet.status = async () => {
+    throw new Error("Herdr unavailable");
+  };
+  files[0].signal();
+  await idle(coordinator);
+  assert.deepEqual(deliveries.map(({ message }) => message.details.eventId), ["failed-dispatch"]);
+  assert.ok(warnings.some((error) => error.message === "Herdr unavailable"));
+});
 
 test("startup ignores historical events and subscribes to every active pane", async (t) => {
   const first = assignment("a1");
