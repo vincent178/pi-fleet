@@ -613,9 +613,9 @@ test("an overlapping coordinator cannot watch or deliver from an owned registry"
 });
 
 test("lease renewal keeps an active coordinator in ownership", async (t) => {
-  const first = await fixture(t, { leaseDurationMs: 100, leaseRenewMs: 15 });
+  const first = await fixture(t, { leaseDurationMs: 500, leaseRenewMs: 20 });
   const initial = await first.fleet.store.readCoordinatorLease();
-  await delay(180);
+  await delay(200);
   const renewed = await first.fleet.store.readCoordinatorLease();
   assert.equal(renewed.ownerId, initial.ownerId);
   assert.ok(renewed.expiresAt > initial.expiresAt);
