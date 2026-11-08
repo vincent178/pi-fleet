@@ -323,7 +323,7 @@ export class RegistryStore {
     }
   }
 
-  async acquireRecoveryGuard() {
+  async acquireRecoveryGuard(timeoutMs = this.lockTimeoutMs) {
     const started = this.now();
     while (true) {
       const handle = await open(this.recoveryPath, "a");
@@ -340,7 +340,7 @@ export class RegistryStore {
         await handle.close();
         if (error.code !== "EAGAIN" && error.code !== "EWOULDBLOCK") throw error;
       }
-      if (this.now() - started >= this.lockTimeoutMs) {
+      if (Number.isFinite(timeoutMs) && this.now() - started >= timeoutMs) {
         throw new FleetError("The registry recovery guard did not become available.", "registry_lock_timeout");
       }
       await delay(this.lockRetryMs);
@@ -382,7 +382,7 @@ export class RegistryStore {
 
   async releaseLock(lock) {
     await lock.close();
-    const releaseGuard = await this.acquireRecoveryGuard();
+    const releaseGuard = await this.acquireRecoveryGuard(Number.POSITIVE_INFINITY);
     try {
       const owner = await this.readLockOwner(this.lockPath);
       if (owner?.ownerToken !== lock.ownerToken) return false;

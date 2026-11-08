@@ -363,6 +363,21 @@ test("a crashed recovery guard cannot strand a new registry owner", async (t) =>
   assert.equal(await store.releaseLock(lock), true);
 });
 
+test("registry mutex release waits for the recovery guard without abandoning ownership", async (t) => {
+  const store = await storeFixture(t, { lockTimeoutMs: 20, lockRetryMs: 5 });
+  const owner = await store.acquireLock();
+  const releaseGuard = await store.acquireRecoveryGuard();
+  let settled = false;
+  const releasing = store.releaseLock(owner).then((result) => {
+    settled = true;
+    return result;
+  });
+  await delay(50);
+  assert.equal(settled, false);
+  await releaseGuard();
+  assert.equal(await releasing, true);
+});
+
 test("coordinator lease acquisition is atomic and release permits a new owner", async (t) => {
   const firstStore = await storeFixture(t);
   const secondStore = new RegistryStore(firstStore.root);
