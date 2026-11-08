@@ -275,21 +275,25 @@ export class AssignmentCoordinator {
     }
   }
 
+  async reconcileMovesAndStatus(moves) {
+    for (const event of moves) {
+      await this.fleet.reconcileEvent(event);
+    }
+    await this.fleet.status();
+  }
+
   async reconcile() {
     if (!(await this.confirmLease())) return;
     const moves = [...this.pendingMoves];
     let moveRefreshCompleted = moves.length === 0;
     try {
-      for (const event of moves) {
-        await this.fleet.reconcileEvent(event);
-      }
-      await this.fleet.status();
+      await this.reconcileMovesAndStatus(moves);
       moveRefreshCompleted = true;
     } catch (error) {
       this.onWarning(error);
       await delay(50);
       try {
-        await this.fleet.status();
+        await this.reconcileMovesAndStatus(moves);
         moveRefreshCompleted = true;
       } catch (retryError) {
         this.onWarning(retryError);

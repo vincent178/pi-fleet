@@ -884,6 +884,33 @@ test("failed move reconciliation retains the move for retry after agent exit", a
   assert.equal(registry.assignments[0].status, "missing");
 });
 
+test("a status retry replays a failed move before completing", async (t) => {
+  const { fleet, herdr, watcher, coordinator } = await fixture(t);
+  herdr.agents.delete("agent-a1");
+  const reconcileEvent = fleet.reconcileEvent.bind(fleet);
+  let reconcileCalls = 0;
+  fleet.reconcileEvent = async (event) => {
+    reconcileCalls += 1;
+    if (reconcileCalls === 1) throw new Error("move reconciliation failed");
+    return reconcileEvent(event);
+  };
+  watcher.emit("event", {
+    event: "pane_moved",
+    data: {
+      previous_pane_id: "p-a1",
+      pane: { pane_id: "p-new", tab_id: "t-new", workspace_id: "w2" },
+    },
+  });
+  await coordinator.requestReconciliation();
+  await idle(coordinator);
+  const registry = await fleet.store.read();
+  assert.equal(reconcileCalls, 2);
+  assert.equal(registry.assignments[0].paneId, "p-new");
+  assert.equal(registry.assignments[0].tabId, "t-new");
+  assert.equal(registry.assignments[0].workspaceId, "w2");
+  assert.equal(coordinator.pendingMoves.length, 0);
+});
+
 test("chained moves remain ordered before pane subscriptions advance", async (t) => {
   const { fleet, herdr, watcher, coordinator } = await fixture(t);
   herdr.agents.delete("agent-a1");
