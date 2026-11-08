@@ -18,7 +18,9 @@ export function isAssignmentEvent(event, paneIds, tabIds) {
   return Boolean(
     (data.pane_id && paneIds.has(data.pane_id)) ||
       (data.previous_pane_id && paneIds.has(data.previous_pane_id)) ||
-      (data.tab_id && tabIds.has(data.tab_id)),
+      (data.pane?.pane_id && paneIds.has(data.pane.pane_id)) ||
+      (data.tab_id && tabIds.has(data.tab_id)) ||
+      (data.pane?.tab_id && tabIds.has(data.pane.tab_id)),
   );
 }
 
@@ -145,7 +147,14 @@ export class HerdrEventWatcher extends EventEmitter {
       this.emit("ready");
       return;
     }
-    if (message.event) this.emit("event", message);
+    if (message.event) {
+      const event =
+        typeof message.event === "string"
+          ? { event: message.event, data: message.data }
+          : { ...message.event };
+      if (message.id !== undefined) event.id = message.id;
+      this.emit("event", event);
+    }
   }
 
   isCurrent(socket, generation) {

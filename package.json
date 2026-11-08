@@ -26,7 +26,7 @@
   ],
   "scripts": {
     "test": "node --test",
-    "check": "node --check src/cli.js && node --check src/fleet.js && node --check src/herdr.js && node --check src/herdr-events.js && node --check src/store.js"
+    "check": "node --check src/cli.js && node --check src/coordinator.js && node --check src/fleet.js && node --check src/herdr.js && node --check src/herdr-events.js && node --check src/store.js"
   },
   "pi": {
     "extensions": [
@@ -43,5 +43,8 @@
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
     "typebox": "*"
+  },
+  "dependencies": {
+    "fs-ext": "^2.1.1"
   }
 }

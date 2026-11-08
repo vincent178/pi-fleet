@@ -1,11 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Fleet } from "../src/fleet.js";
 import { FleetError } from "../src/errors.js";
 import { FakeHerdr } from "./fake-herdr.js";
+import { deferred } from "./helpers/deferred.js";
 
 async function fixture(t) {
   const cwd = await mkdtemp(join(tmpdir(), "pi-fleet-test-"));
@@ -248,12 +249,16 @@ test("move reconciliation waits for an in-flight refresh", async (t) => {
   await fleet.createTeam({ name: "team-a", noUi: true });
   const assignment = await fleet.dispatch({ team: "team-a", task: taskCard });
   const staleAgent = { ...herdr.agents.get(assignment.name) };
+  const agentsStarted = deferred();
   let resolveAgents;
-  herdr.listAgents = () =>
-    new Promise((resolve) => {
+  herdr.listAgents = () => {
+    agentsStarted.resolve();
+    return new Promise((resolve) => {
       resolveAgents = () => resolve([staleAgent]);
     });
+  };
   const refreshing = fleet.refresh();
+  await agentsStarted.promise;
   const moving = fleet.reconcileEvent({
     event: "pane_moved",
     data: {
@@ -261,10 +266,6 @@ test("move reconciliation waits for an in-flight refresh", async (t) => {
       pane: { pane_id: "w1:p99", tab_id: "w1:t99", workspace_id: "w1" },
     },
   });
-  for (let attempt = 0; attempt < 20 && !resolveAgents; attempt += 1) {
-    await new Promise((resolve) => setImmediate(resolve));
-  }
-  assert.equal(typeof resolveAgents, "function");
   resolveAgents();
   await Promise.all([refreshing, moving]);
   assert.equal((await fleet.store.read()).assignments[0].paneId, "w1:p99");
@@ -276,16 +277,16 @@ test("refresh does not overwrite moves committed by another Fleet instance", asy
   const assignment = await fleet.dispatch({ team: "team-a", task: taskCard });
   const secondFleet = new Fleet({ cwd, root: ".fleet", herdr });
   const staleAgent = { ...herdr.agents.get(assignment.name) };
+  const agentsStarted = deferred();
   let resolveAgents;
-  herdr.listAgents = () =>
-    new Promise((resolve) => {
+  herdr.listAgents = () => {
+    agentsStarted.resolve();
+    return new Promise((resolve) => {
       resolveAgents = () => resolve([staleAgent]);
     });
+  };
   const refreshing = fleet.refresh();
-  for (let attempt = 0; attempt < 20 && !resolveAgents; attempt += 1) {
-    await new Promise((resolve) => setImmediate(resolve));
-  }
-  assert.equal(typeof resolveAgents, "function");
+  await agentsStarted.promise;
   const moving = secondFleet.reconcileEvent({
     event: "pane_moved",
     data: {
@@ -391,6 +392,23 @@ test("active release requires force", async (t) => {
   await assert.rejects(fleet.release(assignment.id), { code: "assignment_active" });
   const released = await fleet.release(assignment.id, { force: true });
   assert.equal(released.status, "released");
+});
+
+test("events recovers uncommitted transactions before reading", async (t) => {
+  const { fleet } = await fixture(t);
+  const before = await fleet.store.read();
+  const eventTail = await fleet.store.readEventsTail();
+  const transaction = {
+    id: "tx-events-read",
+    eventTail: { boundary: eventTail.boundary, tail: eventTail.tail.toString("base64") },
+  };
+  await writeFile(fleet.store.transactionPath, JSON.stringify(transaction), "utf8");
+  const after = structuredClone(before);
+  after.lastTransactionId = transaction.id;
+  after.assignments.push({ id: "asg_uncommitted", name: "w-a", team: "team-a", status: "pending" });
+  await fleet.store.appendTransitions(before, after);
+  assert.deepEqual(await fleet.events(), []);
+  await assert.rejects(readFile(fleet.store.transactionPath), { code: "ENOENT" });
 });
 
 test("wait returns a blocked assignment after a Herdr state change", async (t) => {

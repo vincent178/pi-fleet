@@ -2,8 +2,12 @@ import { CONFIG_DIR_NAME, type ExtensionAPI } from "@earendil-works/pi-coding-ag
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { join } from "node:path";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { splitCommandLine } from "../src/args.js";
+import { AssignmentCoordinator, synchronizeCoordinator } from "../src/coordinator.js";
+import { Fleet } from "../src/fleet.js";
+import { HerdrEventWatcher } from "../src/herdr-events.js";
 
 const CLI_PATH = fileURLToPath(new URL("../src/cli.js", import.meta.url));
 const OUTPUT_LIMIT = 50 * 1024;
@@ -55,6 +59,8 @@ function toolArguments(params: Record<string, unknown>): string[] {
 }
 
 export default function (pi: ExtensionAPI) {
+	let coordinator: AssignmentCoordinator | null = null;
+
 	async function execute(args: string[], cwd: string, signal?: AbortSignal, json = false): Promise<FleetResult> {
 		const root = join(cwd, CONFIG_DIR_NAME, "fleet");
 		const globalArgs = [CLI_PATH, "--root", root];
@@ -68,11 +74,50 @@ export default function (pi: ExtensionAPI) {
 			try {
 				const args = source.trim() ? splitCommandLine(source) : ["help"];
 				const result = await execute(args, ctx.cwd);
+				const warning = result.code === 0 ? await synchronizeCoordinator(coordinator) : null;
+				if (warning) ctx.ui.notify(`Fleet watcher: ${warning.message}`, "warning");
 				ctx.ui.notify(outputText(result), result.code === 0 ? "info" : "error");
 			} catch (error) {
 				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
 			}
 		},
+	});
+
+	pi.on("session_start", async (_event, ctx) => {
+		const previous = coordinator;
+		coordinator = null;
+		try {
+			await previous?.stop();
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			ctx.ui.notify(`Fleet watcher: ${message}`, "warning");
+		}
+		if (process.env.HERDR_ENV !== "1") return;
+		const fleet = new Fleet({ cwd: ctx.cwd, root: join(ctx.cwd, CONFIG_DIR_NAME, "fleet") });
+		const watcher = new HerdrEventWatcher({
+			socketPath: process.env.HERDR_SOCKET_PATH ?? join(homedir(), ".config", "herdr", "herdr.sock"),
+		});
+		coordinator = new AssignmentCoordinator({
+			fleet,
+			watcher,
+			deliver: (message, options) => pi.sendMessage(message, options),
+			onWarning: (error) => {
+				const message = error instanceof Error ? error.message : String(error);
+				ctx.ui.notify(`Fleet watcher: ${message}`, "warning");
+			},
+		});
+		try {
+			await coordinator.start();
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			ctx.ui.notify(`Fleet watcher: ${message}`, "warning");
+		}
+	});
+
+	pi.on("session_shutdown", async () => {
+		const current = coordinator;
+		coordinator = null;
+		await current?.stop();
 	});
 
 	pi.registerTool({
@@ -105,6 +150,8 @@ export default function (pi: ExtensionAPI) {
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			const args = toolArguments(params);
 			const result = await execute(args, ctx.cwd, signal, true);
+			const warning = result.code === 0 ? await synchronizeCoordinator(coordinator) : null;
+			if (warning) ctx.ui.notify(`Fleet watcher: ${warning.message}`, "warning");
 			return {
 				content: [{ type: "text", text: outputText(result) }],
 				details: result,

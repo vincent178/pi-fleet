@@ -496,6 +496,6 @@ export class Fleet {
   }
 
   async events() {
-    return this.store.readEvents();
+    return this.store.withLock(() => this.store.readEvents());
   }
 }
