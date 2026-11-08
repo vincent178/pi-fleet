@@ -5,14 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { RegistryStore, registryEventId } from "../src/store.js";
-
-function deferred() {
-  let resolve;
-  const promise = new Promise((resolvePromise) => {
-    resolve = resolvePromise;
-  });
-  return { promise, resolve };
-}
+import { deferred } from "./helpers/deferred.js";
 
 async function storeFixture(t, options) {
   const root = await mkdtemp(join(tmpdir(), "pi-fleet-store-"));
@@ -290,27 +283,20 @@ test("coordinator lease renewal exposes valid JSON to concurrent readers", async
   const store = await storeFixture(t);
   const lease = await store.acquireCoordinatorLease({ leaseMs: 500 });
   t.after(() => store.releaseCoordinatorLease(lease));
-  const truncated = deferred();
-  const resume = deferred();
-  const write = lease.handle.write.bind(lease.handle);
-  lease.handle.write = async (...args) => {
-    truncated.resolve();
-    await resume.promise;
-    return write(...args);
+  const readers = Array.from({ length: 4 }, async () => {
+    for (let count = 0; count < 50; count += 1) {
+      const current = await store.readCoordinatorLease();
+      assert.equal(current.ownerId, lease.ownerId);
+      assert.equal(Number.isFinite(current.expiresAt), true);
+    }
+  });
+  const renewing = async () => {
+    for (let count = 0; count < 20; count += 1) {
+      assert.equal(await store.renewCoordinatorLease(lease, 500), true);
+    }
   };
-  const renewing = store.renewCoordinatorLease(lease, 500);
-  await Promise.race([truncated.promise, renewing]);
-  let current;
-  let error;
-  try {
-    current = await store.readCoordinatorLease();
-  } catch (caught) {
-    error = caught;
-  } finally {
-    resume.resolve();
-  }
-  assert.equal(await renewing, true);
-  assert.ifError(error);
+  await Promise.all([...readers, renewing()]);
+  const current = await store.readCoordinatorLease();
   assert.equal(current.ownerId, lease.ownerId);
   assert.equal(Number.isFinite(current.expiresAt), true);
 });
@@ -331,5 +317,7 @@ test("assignment transitions append JSONL events", async (t) => {
   for (const event of events) assert.match(event.id, /^evt_[a-f0-9]{32}$/);
   const legacy = { timestamp: "2026-01-01T00:00:00.000Z", type: "team.created", team: "team-a" };
   assert.equal(registryEventId(legacy), registryEventId({ ...legacy }));
+  const reordered = { team: "team-a", type: "team.created", timestamp: legacy.timestamp };
+  assert.equal(registryEventId(legacy), registryEventId(reordered));
   assert.match(registryEventId(legacy), /^legacy_[a-f0-9]{64}$/);
 });

@@ -10,14 +10,7 @@ import { Fleet } from "../src/fleet.js";
 import { HerdrEventWatcher } from "../src/herdr-events.js";
 import { RegistryStore } from "../src/store.js";
 import { FakeHerdr } from "./fake-herdr.js";
-
-function deferred() {
-  let resolve;
-  const promise = new Promise((resolvePromise) => {
-    resolve = resolvePromise;
-  });
-  return { promise, resolve };
-}
+import { deferred } from "./helpers/deferred.js";
 
 function assignment(id, overrides = {}) {
   return {
@@ -302,7 +295,7 @@ test("blocked events identify the task, assignment, role, state, and completion 
   assert.match(message.content, /Role: "worker"/);
   assert.match(message.content, /State: "working" -> "blocked"/);
   assert.match(message.content, /at-least-once semantics.*may be a duplicate/);
-  assert.match(message.content, /task-card state and Evidence.*Over handling idempotent/);
+  assert.match(message.content, /task-card state and Evidence.*your handling idempotent/);
   assert.match(message.content, /Do not repeat actions.*records as complete/);
   assert.match(message.content, /Herdr states do not prove task completion/);
   assert.deepEqual(options, { triggerTurn: true, deliverAs: "followUp" });

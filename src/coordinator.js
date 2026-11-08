@@ -24,7 +24,7 @@ export function formatAssignmentMessage(event, assignment) {
     `State: ${formatMessageValue(event.from)} -> ${formatMessageValue(event.to)}`,
     `Team: ${formatMessageValue(assignment.team)}`,
     "Delivery uses at-least-once semantics. This event may be a duplicate.",
-    "Use task-card state and Evidence to make Over handling idempotent.",
+    "Use task-card state and Evidence to make your handling idempotent.",
     "Do not repeat actions that the task card or Evidence records as complete.",
     "Inspect the assignment before further action.",
     "Herdr states do not prove task completion.",

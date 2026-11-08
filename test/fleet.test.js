@@ -6,14 +6,7 @@ import { tmpdir } from "node:os";
 import { Fleet } from "../src/fleet.js";
 import { FleetError } from "../src/errors.js";
 import { FakeHerdr } from "./fake-herdr.js";
-
-function deferred() {
-  let resolve;
-  const promise = new Promise((resolvePromise) => {
-    resolve = resolvePromise;
-  });
-  return { promise, resolve };
-}
+import { deferred } from "./helpers/deferred.js";
 
 async function fixture(t) {
   const cwd = await mkdtemp(join(tmpdir(), "pi-fleet-test-"));

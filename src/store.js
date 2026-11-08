@@ -13,9 +13,17 @@ const DELIVERY_VERSION = 1;
 const COORDINATOR_LEASE_VERSION = 1;
 const DEFAULT_COORDINATOR_LEASE_MS = 10_000;
 
+function canonicalValue(value) {
+  if (Array.isArray(value)) return value.map(canonicalValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonicalValue(value[key])]));
+  }
+  return value;
+}
+
 export function registryEventId(event) {
   if (event.id) return event.id;
-  const digest = createHash("sha256").update(JSON.stringify(event)).digest("hex");
+  const digest = createHash("sha256").update(JSON.stringify(canonicalValue(event))).digest("hex");
   return `legacy_${digest}`;
 }
 
