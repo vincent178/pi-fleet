@@ -71,6 +71,7 @@ export class AssignmentCoordinator {
     this.leaseRelease = null;
     this.drainPromise = null;
     this.startPromise = null;
+    this.stopPromise = null;
     this.generation = 0;
     this.onReady = () => void this.requestReconciliation();
     this.onEvent = (event) => this.receiveEvent(event);
@@ -82,6 +83,10 @@ export class AssignmentCoordinator {
   }
 
   async start() {
+    if (this.active) return true;
+    if (this.startPromise) return this.startPromise;
+    if (this.stopPromise) await this.stopPromise;
+    if (this.drainPromise) await this.drainPromise;
     if (this.active) return true;
     if (this.startPromise) return this.startPromise;
     const generation = ++this.generation;
@@ -335,6 +340,16 @@ export class AssignmentCoordinator {
   }
 
   async stop() {
+    if (this.stopPromise) return this.stopPromise;
+    this.stopPromise = this.stopSession();
+    try {
+      await this.stopPromise;
+    } finally {
+      this.stopPromise = null;
+    }
+  }
+
+  async stopSession() {
     this.generation += 1;
     this.deactivate();
     if (this.startPromise) await this.startPromise;

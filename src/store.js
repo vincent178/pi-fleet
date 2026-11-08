@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { open, mkdir, readFile, rename, stat, unlink, appendFile } from "node:fs/promises";
+import { open, mkdir, readFile, rename, stat, unlink, appendFile, truncate } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { lock as acquireFileLock } from "proper-lockfile";
@@ -369,7 +369,26 @@ export class RegistryStore {
       }
     }
     if (events.length > 0) {
+      await this.repairEventsTail();
       await appendFile(this.eventsPath, events.map((event) => JSON.stringify(event)).join("\n") + "\n", "utf8");
+    }
+  }
+
+  async repairEventsTail() {
+    let source;
+    try {
+      source = await readFile(this.eventsPath, "utf8");
+    } catch (error) {
+      if (error.code === "ENOENT") return;
+      throw error;
+    }
+    if (!source || source.endsWith("\n")) return;
+    const boundary = source.lastIndexOf("\n") + 1;
+    try {
+      JSON.parse(source.slice(boundary));
+      await appendFile(this.eventsPath, "\n", "utf8");
+    } catch {
+      await truncate(this.eventsPath, boundary);
     }
   }
 
@@ -545,10 +564,19 @@ export class RegistryStore {
   async readEvents() {
     try {
       const source = await readFile(this.eventsPath, "utf8");
-      return source
-        .split("\n")
-        .filter(Boolean)
-        .map((line) => JSON.parse(line));
+      const lines = source.split("\n");
+      const events = [];
+      for (let index = 0; index < lines.length; index += 1) {
+        const line = lines[index];
+        if (!line) continue;
+        try {
+          events.push(JSON.parse(line));
+        } catch (error) {
+          if (index === lines.length - 1 && !source.endsWith("\n")) break;
+          throw new FleetError("The registry event log is not valid JSON.", "events_invalid", { cause: error });
+        }
+      }
+      return events;
     } catch (error) {
       if (error.code === "ENOENT") return [];
       throw error;

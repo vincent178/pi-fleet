@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { appendFile, mkdtemp, rm } from "node:fs/promises";
+import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -135,6 +135,7 @@ async function fixture(t, options = {}) {
     });
   }
   if (options.events) await appendEvents(fleet, options.events);
+  if (options.eventLog) await writeFile(fleet.store.eventsPath, options.eventLog, "utf8");
   const watcher = options.watcher ?? new FakeWatcher();
   const files = [];
   const deliveries = [];
@@ -267,6 +268,21 @@ test("persisted events still deliver when Herdr refresh fails", async (t) => {
   await idle(coordinator);
   assert.deepEqual(deliveries.map(({ message }) => message.details.eventId), ["failed-dispatch"]);
   assert.ok(warnings.some((error) => error.message === "Herdr unavailable"));
+});
+
+test("an interrupted event-log tail does not block startup or later delivery", async (t) => {
+  const { fleet, files, deliveries, coordinator } = await fixture(t, { eventLog: '{"id":"interrupted"' });
+  assert.equal(coordinator.active, true);
+  assert.deepEqual(deliveries, []);
+  await fleet.store.update((registry) => {
+    registry.assignments[0].status = "blocked";
+  });
+  files[0].signal();
+  await idle(coordinator);
+  assert.equal(deliveries.length, 1);
+  assert.equal(deliveries[0].message.details.event.to, "blocked");
+  const events = await fleet.store.readEvents();
+  assert.ok(events.some((event) => event.to === "blocked"));
 });
 
 test("startup ignores historical events and subscribes to every active pane", async (t) => {
@@ -771,6 +787,30 @@ test("stop closes watchers, removes listeners, and ignores later events", async 
   watcher.emit("event", { event: "pane_agent_status_changed", data: { pane_id: "p-a1" } });
   await idle(coordinator);
   assert.equal(deliveries.length, 0);
+});
+
+test("restart waits for in-flight delivery and stop cleanup", async (t) => {
+  const entered = deferred();
+  const resume = deferred();
+  const { fleet, files, deliveries, coordinator } = await fixture(t, {
+    deliver: async () => {
+      entered.resolve();
+      await resume.promise;
+    },
+  });
+  await appendEvents(fleet, [changed("event-restart", "a1", "blocked")]);
+  files[0].signal();
+  await entered.promise;
+  const stopping = coordinator.stop();
+  const restarting = coordinator.start();
+  await delay(20);
+  assert.equal(coordinator.active, false);
+  resume.resolve();
+  await stopping;
+  await restarting;
+  assert.equal(coordinator.active, true);
+  assert.equal(deliveries.length, 1);
+  assert.equal(await fleet.store.ownsCoordinatorLease(coordinator.lease), true);
 });
 
 test("delivery state merges concurrent writes without losing IDs", async (t) => {
