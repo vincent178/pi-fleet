@@ -261,6 +261,10 @@ export class RegistryStore {
         realpath: false,
         stale: 5000,
         update: 1000,
+        onCompromised: (error) => {
+          if (error.code === "ENOENT") return;
+          throw error;
+        },
         retries: {
           retries,
           factor: 1,
