@@ -4,7 +4,7 @@ import { promisify } from "node:util";
 import { open, mkdir, readFile, rename, stat, unlink, appendFile, truncate } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { lock as acquireFileLock } from "proper-lockfile";
+import { flock } from "fs-ext";
 import { FleetError } from "./errors.js";
 
 const REGISTRY_VERSION = 1;
@@ -12,9 +12,11 @@ const REGISTRY_LOCK_VERSION = 1;
 const LOCK_TIMEOUT_MS = 10_000;
 const STALE_LOCK_MS = 30_000;
 const DELIVERY_VERSION = 1;
+const DELIVERY_HISTORY_LIMIT = 1000;
 const COORDINATOR_LEASE_VERSION = 1;
 const DEFAULT_COORDINATOR_LEASE_MS = 10_000;
 const execFileAsync = promisify(execFile);
+const flockAsync = promisify(flock);
 
 function canonicalValue(value) {
   if (Array.isArray(value)) return value.map(canonicalValue);
@@ -59,18 +61,22 @@ function validateRegistry(registry) {
   return registry;
 }
 
-async function writeAtomic(path, value) {
+async function writeTextAtomic(path, source) {
   await mkdir(dirname(path), { recursive: true });
   const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
   await open(temporary, "wx").then(async (handle) => {
     try {
-      await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`, "utf8");
+      await handle.writeFile(source, "utf8");
       await handle.sync();
     } finally {
       await handle.close();
     }
   });
   await rename(temporary, path);
+}
+
+async function writeAtomic(path, value) {
+  await writeTextAtomic(path, `${JSON.stringify(value, null, 2)}\n`);
 }
 
 function leaseRecord(lease) {
@@ -85,7 +91,13 @@ async function processStartIdentity(pid) {
   } catch (error) {
     if (error.code !== "ENOENT" && error.code !== "ENOTDIR") throw error;
   }
-  const { stdout } = await execFileAsync("ps", ["-p", String(pid), "-o", "lstart="], { timeout: 5000 });
+  let stdout;
+  try {
+    ({ stdout } = await execFileAsync("ps", ["-p", String(pid), "-o", "lstart="], { timeout: 5000 }));
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
   const identity = stdout.trim();
   if (!identity) {
     throw new FleetError("The process start identity is unavailable.", "process_start_unavailable");
@@ -97,7 +109,9 @@ async function processMatchesOwner(pid, owner, getProcessStartIdentity) {
   try {
     process.kill(pid, 0);
     if (!owner.processStartId) return true;
-    return (await getProcessStartIdentity(pid)) === owner.processStartId;
+    const identity = await getProcessStartIdentity(pid);
+    if (!identity) return true;
+    return identity === owner.processStartId;
   } catch (error) {
     if (error.code === "ESRCH" || error.code === "ENOENT") return false;
     if (error.code === "EPERM") return true;
@@ -239,7 +253,7 @@ export class RegistryStore {
         typeof owner.ownerToken !== "string" ||
         owner.ownerToken.length === 0 ||
         !Number.isFinite(Date.parse(owner.createdAt)) ||
-        (owner.processStartId !== undefined && typeof owner.processStartId !== "string")
+        (owner.processStartId != null && typeof owner.processStartId !== "string")
       ) {
         return null;
       }
@@ -279,31 +293,26 @@ export class RegistryStore {
   }
 
   async acquireRecoveryGuard() {
-    const retries = this.lockTimeoutMs <= 0 ? 0 : Math.ceil(this.lockTimeoutMs / this.lockRetryMs);
-    try {
-      return await acquireFileLock(this.root, {
-        lockfilePath: this.recoveryPath,
-        realpath: false,
-        stale: 5000,
-        update: 1000,
-        onCompromised: (error) => {
-          if (error.code === "ENOENT") return;
-          throw error;
-        },
-        retries: {
-          retries,
-          factor: 1,
-          minTimeout: this.lockRetryMs,
-          maxTimeout: this.lockRetryMs,
-        },
-      });
-    } catch (error) {
-      if (error.code === "ELOCKED") {
-        throw new FleetError("The registry recovery guard did not become available.", "registry_lock_timeout", {
-          cause: error,
-        });
+    const started = this.now();
+    while (true) {
+      const handle = await open(this.recoveryPath, "a");
+      try {
+        await flockAsync(handle.fd, "exnb");
+        return async () => {
+          try {
+            await flockAsync(handle.fd, "un");
+          } finally {
+            await handle.close();
+          }
+        };
+      } catch (error) {
+        await handle.close();
+        if (error.code !== "EAGAIN" && error.code !== "EWOULDBLOCK") throw error;
       }
-      throw error;
+      if (this.now() - started >= this.lockTimeoutMs) {
+        throw new FleetError("The registry recovery guard did not become available.", "registry_lock_timeout");
+      }
+      await delay(this.lockRetryMs);
     }
   }
 
@@ -404,17 +413,38 @@ export class RegistryStore {
   }
 
   async repairEventsTail() {
-    let source;
+    let details;
     try {
-      source = await readFile(this.eventsPath);
+      details = await stat(this.eventsPath);
     } catch (error) {
       if (error.code === "ENOENT") return false;
       throw error;
     }
-    if (source.length === 0 || source[source.length - 1] === 10) return false;
-    const boundary = source.lastIndexOf(10) + 1;
+    if (details.size === 0) return false;
+    const handle = await open(this.eventsPath, "r");
+    let position = details.size;
+    let boundary = 0;
+    let tail = Buffer.alloc(0);
     try {
-      JSON.parse(source.subarray(boundary).toString("utf8"));
+      while (position > 0) {
+        const start = Math.max(0, position - 64 * 1024);
+        const buffer = Buffer.alloc(position - start);
+        const { bytesRead } = await handle.read(buffer, 0, buffer.length, start);
+        tail = Buffer.concat([buffer.subarray(0, bytesRead), tail]);
+        const newline = tail.lastIndexOf(10);
+        if (newline >= 0) {
+          boundary = start + newline + 1;
+          tail = tail.subarray(newline + 1);
+          break;
+        }
+        position = start;
+      }
+    } finally {
+      await handle.close();
+    }
+    if (tail.length === 0 || tail[tail.length - 1] === 10) return false;
+    try {
+      JSON.parse(tail.toString("utf8"));
       return true;
     } catch {
       await truncate(this.eventsPath, boundary);
@@ -476,6 +506,7 @@ export class RegistryStore {
         version: DELIVERY_VERSION,
         handledEventIds: [...handledEventIds],
       });
+      if (handledEventIds.size > DELIVERY_HISTORY_LIMIT) await this.compactDelivery(handledEventIds);
     } finally {
       await this.releaseLock(lock);
     }
@@ -589,6 +620,21 @@ export class RegistryStore {
       if (error.code === "ENOENT") return null;
       throw error;
     }
+  }
+
+  async compactDelivery(handledEventIds) {
+    const events = await this.readEvents();
+    const pendingIds = new Set(
+      events.filter((event) => !handledEventIds.has(registryEventId(event))).map(registryEventId),
+    );
+    const retainedIds = new Set([...events.slice(-DELIVERY_HISTORY_LIMIT).map(registryEventId), ...pendingIds]);
+    const retainedEvents = events.filter((event) => retainedIds.has(registryEventId(event)));
+    const source = retainedEvents.map((event) => JSON.stringify(event)).join("\n") + "\n";
+    await writeTextAtomic(this.eventsPath, source);
+    await writeAtomic(this.deliveryPath, {
+      version: DELIVERY_VERSION,
+      handledEventIds: [...handledEventIds].filter((id) => retainedIds.has(id)),
+    });
   }
 
   async readEvents() {

@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
@@ -77,6 +79,13 @@ test("registry mutex acquisition does not require an initialized registry file",
   t.after(() => rm(root, { recursive: true, force: true }));
   const store = new RegistryStore(root);
   const lock = await store.acquireLock();
+  assert.equal(await store.releaseLock(lock), true);
+});
+
+test("registry mutex works without process-start identity support", async (t) => {
+  const store = await storeFixture(t, { getProcessStartIdentity: async () => null });
+  const lock = await store.acquireLock();
+  assert.equal(JSON.parse(await readFile(store.lockPath, "utf8")).processStartId, null);
   assert.equal(await store.releaseLock(lock), true);
 });
 
@@ -203,9 +212,7 @@ test("concurrent stale recovery-guard recovery permits one replacement owner", a
   const oldStore = await storeFixture(t, { now });
   const stale = await oldStore.acquireLock();
   const staleToken = stale.ownerToken;
-  await mkdir(oldStore.recoveryPath);
-  const staleTime = new Date(Date.now() - 10_000);
-  await utimes(oldStore.recoveryPath, staleTime, staleTime);
+  await writeFile(oldStore.recoveryPath, "", "utf8");
   offset = 30_001;
   const stores = Array.from(
     { length: 8 },
@@ -229,9 +236,23 @@ test("concurrent stale recovery-guard recovery permits one replacement owner", a
 
 test("a crashed recovery guard cannot strand a new registry owner", async (t) => {
   const store = await storeFixture(t, { lockTimeoutMs: 2000, lockRetryMs: 20 });
-  await mkdir(store.recoveryPath);
-  const recentCrash = new Date(Date.now() - 4500);
-  await utimes(store.recoveryPath, recentCrash, recentCrash);
+  const child = spawn(
+    process.execPath,
+    [
+      "-e",
+      `import { open } from "node:fs/promises";
+       import { flock } from "fs-ext";
+       import { promisify } from "node:util";
+       const handle = await open(${JSON.stringify(store.recoveryPath)}, "a");
+       await promisify(flock)(handle.fd, "ex");
+       console.log("ready");
+       setInterval(() => {}, 1000);`,
+    ],
+    { stdio: ["ignore", "pipe", "inherit"] },
+  );
+  await once(child.stdout, "data");
+  child.kill("SIGKILL");
+  await once(child, "exit");
   const lock = await store.acquireLock();
   assert.equal(await store.releaseLock(lock), true);
 });
@@ -337,6 +358,30 @@ test("a valid unterminated event remains intact during the next append", async (
   assert.equal(events.length, 2);
   assert.equal(events[0].id, legacy.id);
   assert.equal(events[1].type, "assignment.created");
+});
+
+test("delivery compaction retains recent history and pending events", async (t) => {
+  const store = await storeFixture(t);
+  const pending = {
+    id: "evt_pending",
+    timestamp: "2026-01-01T00:00:00.000Z",
+    type: "assignment.changed",
+    assignmentId: "a1",
+    from: "working",
+    to: "blocked",
+  };
+  const handled = Array.from({ length: 1200 }, (_, index) => ({
+    id: `evt_handled_${index}`,
+    timestamp: "2026-01-01T00:00:00.000Z",
+    type: "team.created",
+    team: `team-${index}`,
+  }));
+  await writeFile(store.eventsPath, `${[pending, ...handled].map((event) => JSON.stringify(event)).join("\n")}\n`, "utf8");
+  await store.markEventsHandled(handled.map((event) => event.id));
+  const events = await store.readEvents();
+  assert.equal(events.length, 1001);
+  assert.equal(events[0].id, pending.id);
+  assert.equal((await store.readDelivery()).handledEventIds.length, 1000);
 });
 
 test("assignment transitions append JSONL events", async (t) => {

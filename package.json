@@ -45,6 +45,6 @@
     "typebox": "*"
   },
   "dependencies": {
-    "proper-lockfile": "^4.1.2"
+    "fs-ext": "^2.1.1"
   }
 }

@@ -232,17 +232,19 @@ The default registry directory is `.pi/fleet`. Use `--root` or
 
 `registry.json` stores teams, tasks, assignments, and Herdr IDs. `events.jsonl`
 stores creation records and assignment state transitions with stable event IDs.
-`delivery.json` stores handled event IDs for coordinator notifications.
+`delivery.json` stores handled event IDs for coordinator notifications. The
+event log keeps the latest 1,000 records plus every unhandled record. Delivery
+compaction retains IDs only for those records.
 `coordinator.json` stores the active coordinator lease and its expiry. Shutdown
 removes the lease file. Stale recovery removes it after a crash.
 
 `registry.lock` serializes registry writes and coordinator lease changes. The
-lock record contains the owner PID, process-start identity, a unique owner
-token, and the creation time. After 30 seconds, a contender checks both
-identities. A live owner keeps the lock beyond that threshold. A dead owner or
-a reused PID permits stale recovery. Concurrent
-recovery uses `proper-lockfile` to serialize recovery and writer admission.
-Owner-token checks prevent an old owner from removing a replacement lock.
+lock record contains the owner PID, process-start identity when available, a
+unique owner token, and the creation time. After 30 seconds, a contender checks
+both identities. A live owner keeps the lock beyond that threshold. A dead
+owner or a reused PID permits stale recovery. An OS `flock` mutex serializes
+recovery and writer admission. Owner-token checks prevent an old owner from
+removing a replacement lock.
 
 Assignment states have these meanings:
 
@@ -314,8 +316,8 @@ Use `--cwd` to run an agent in an existing worktree.
          Pi agents
 ```
 
-The core uses Node.js built-ins and `proper-lockfile`. Atomic registry writes
-and a registry lock support concurrent CLI commands.
+The core uses Node.js built-ins and `fs-ext`. Atomic registry writes and a
+registry lock support concurrent CLI commands.
 
 ## Development
 
