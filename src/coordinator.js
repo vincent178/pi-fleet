@@ -218,8 +218,22 @@ export class AssignmentCoordinator {
     return false;
   }
 
+  isRegisteredMove(event) {
+    if (isAssignmentEvent(event, this.watchedPaneIds, this.watchedTabIds)) return true;
+    const previousPaneId = event.data?.previous_pane_id;
+    return this.pendingMoves.some((move) => {
+      const data = move.data ?? {};
+      return data.previous_pane_id === previousPaneId || data.pane?.pane_id === previousPaneId;
+    });
+  }
+
   receiveEvent(event) {
     if (!this.active) return;
+    if (event?.event === "pane_moved" && this.isRegisteredMove(event)) {
+      this.pendingMoves.push(event);
+      void this.requestReconciliation();
+      return;
+    }
     if (event?.event === "pane_agent_detected" && !this.watchedPaneIds.has(event.data?.pane_id)) {
       void this.store
         .read()
@@ -259,22 +273,25 @@ export class AssignmentCoordinator {
 
   async reconcile() {
     if (!(await this.confirmLease())) return;
-    const moves = this.pendingMoves.splice(0);
+    const moves = [...this.pendingMoves];
+    let moveRefreshCompleted = moves.length === 0;
     try {
       for (const event of moves) {
         await this.fleet.reconcileEvent(event);
       }
       await this.fleet.status();
+      moveRefreshCompleted = true;
     } catch (error) {
-      if (moves.length > 0) this.pendingMoves.unshift(...moves);
       this.onWarning(error);
       await delay(50);
       try {
         await this.fleet.status();
+        moveRefreshCompleted = true;
       } catch (retryError) {
         this.onWarning(retryError);
       }
     }
+    if (moveRefreshCompleted && moves.length > 0) this.pendingMoves.splice(0, moves.length);
     if (!(await this.confirmLease())) return;
     const { events, registry, delivery } = await this.store.withLock(async () => {
       return {

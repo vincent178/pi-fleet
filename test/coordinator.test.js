@@ -856,10 +856,10 @@ test("failed move reconciliation retains the move for retry after agent exit", a
   herdr.agents.delete("agent-a1");
   await appendEvents(fleet, [changed("unrelated-blocked", "a1", "blocked")]);
   const status = fleet.status.bind(fleet);
-  let failRefresh = true;
+  let failedRefreshes = 2;
   fleet.status = async (...args) => {
-    if (failRefresh) {
-      failRefresh = false;
+    if (failedRefreshes > 0) {
+      failedRefreshes -= 1;
       throw new Error("refresh failed");
     }
     return status(...args);
@@ -882,6 +882,33 @@ test("failed move reconciliation retains the move for retry after agent exit", a
   assert.equal(registry.assignments[0].paneId, "p-new");
   assert.equal(registry.assignments[0].tabId, "t-new");
   assert.equal(registry.assignments[0].status, "missing");
+});
+
+test("chained moves remain ordered before pane subscriptions advance", async (t) => {
+  const { fleet, herdr, watcher, coordinator } = await fixture(t);
+  herdr.agents.delete("agent-a1");
+  watcher.emit("event", {
+    event: "pane_moved",
+    data: {
+      previous_pane_id: "p-a1",
+      pane: { pane_id: "p-middle", tab_id: "t-middle", workspace_id: "w2" },
+    },
+  });
+  watcher.emit("event", {
+    event: "pane_moved",
+    data: {
+      previous_pane_id: "p-middle",
+      pane: { pane_id: "p-final", tab_id: "t-final", workspace_id: "w3" },
+    },
+  });
+  await coordinator.requestReconciliation();
+  await idle(coordinator);
+  const registry = await fleet.store.read();
+  assert.equal(registry.assignments[0].paneId, "p-final");
+  assert.equal(registry.assignments[0].tabId, "t-final");
+  assert.equal(registry.assignments[0].workspaceId, "w3");
+  assert.equal(registry.assignments[0].status, "missing");
+  assert.equal(coordinator.pendingMoves.length, 0);
 });
 
 test("events received during delivery are preserved and sent in order", async (t) => {
