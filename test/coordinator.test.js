@@ -911,6 +911,35 @@ test("a status retry replays a failed move before completing", async (t) => {
   assert.equal(coordinator.pendingMoves.length, 0);
 });
 
+test("registered command panes accept moves without status subscriptions", async (t) => {
+  const { fleet, watcher, coordinator } = await fixture(t);
+  await fleet.store.update((registry) => {
+    registry.tasks.push({
+      id: "task-a1",
+      team: "team-a",
+      taskCard: "/tasks/a1.md",
+      tabId: "t-a1",
+      commandPaneId: "p-command",
+      status: "active",
+    });
+  });
+  await coordinator.requestReconciliation();
+  await idle(coordinator);
+  assert.deepEqual(watcher.paneIds, ["p-a1"]);
+  watcher.emit("event", {
+    event: "pane_moved",
+    data: {
+      previous_pane_id: "p-command",
+      pane: { pane_id: "p-command-new", tab_id: "t-untracked", workspace_id: "w2" },
+    },
+  });
+  await coordinator.requestReconciliation();
+  await idle(coordinator);
+  const registry = await fleet.store.read();
+  assert.equal(registry.tasks[0].commandPaneId, "p-command-new");
+  assert.deepEqual(watcher.paneIds, ["p-a1"]);
+});
+
 test("chained moves remain ordered before pane subscriptions advance", async (t) => {
   const { fleet, herdr, watcher, coordinator } = await fixture(t);
   herdr.agents.delete("agent-a1");
@@ -938,19 +967,27 @@ test("chained moves remain ordered before pane subscriptions advance", async (t)
   assert.equal(coordinator.pendingMoves.length, 0);
 });
 
-test("a chained move arriving after reconciliation keeps its destination", async (t) => {
+test("newer chained moves retain destinations between reconciliations", async (t) => {
   const { fleet, herdr, watcher, coordinator } = await fixture(t);
   herdr.agents.delete("agent-a1");
   const setPaneIds = watcher.setPaneIds.bind(watcher);
-  let emitted = false;
+  let subscriptionUpdates = 0;
   watcher.setPaneIds = (ids) => {
-    if (!emitted) {
-      emitted = true;
+    subscriptionUpdates += 1;
+    if (subscriptionUpdates === 1) {
       watcher.emit("event", {
         event: "pane_moved",
         data: {
           previous_pane_id: "p-middle",
-          pane: { pane_id: "p-final", tab_id: "t-final", workspace_id: "w3" },
+          pane: { pane_id: "p-next", tab_id: "t-next", workspace_id: "w3" },
+        },
+      });
+    } else if (subscriptionUpdates === 2) {
+      watcher.emit("event", {
+        event: "pane_moved",
+        data: {
+          previous_pane_id: "p-next",
+          pane: { pane_id: "p-final", tab_id: "t-final", workspace_id: "w4" },
         },
       });
     }
@@ -968,7 +1005,7 @@ test("a chained move arriving after reconciliation keeps its destination", async
   const registry = await fleet.store.read();
   assert.equal(registry.assignments[0].paneId, "p-final");
   assert.equal(registry.assignments[0].tabId, "t-final");
-  assert.equal(registry.assignments[0].workspaceId, "w3");
+  assert.equal(registry.assignments[0].workspaceId, "w4");
   assert.equal(registry.assignments[0].status, "missing");
 });
 
