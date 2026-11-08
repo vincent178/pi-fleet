@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { open, mkdir, readFile, rename, stat, unlink, appendFile, truncate } from "node:fs/promises";
+import { open, mkdir, readFile, rename, stat, unlink, appendFile, truncate, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { flock } from "fs-ext";
@@ -418,7 +418,12 @@ export class RegistryStore {
   }
 
   async restoreEventTail(eventTail) {
-    await truncate(this.eventsPath, eventTail.boundary);
+    try {
+      await truncate(this.eventsPath, eventTail.boundary);
+    } catch (error) {
+      if (error.code !== "ENOENT" || eventTail.boundary !== 0 || eventTail.tail.length !== 0) throw error;
+      await writeFile(this.eventsPath, "");
+    }
     await appendFile(this.eventsPath, eventTail.tail);
   }
 

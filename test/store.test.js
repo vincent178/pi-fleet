@@ -85,6 +85,16 @@ test("rollback restores the exact tail after event-log repair", async (t) => {
   assert.deepEqual(await readFile(store.eventsPath), original);
 });
 
+test("recovery creates a missing event log for an empty transaction", async (t) => {
+  const store = await storeFixture(t);
+  const transaction = { id: "tx-empty", eventTail: { boundary: 0, tail: "" } };
+  await writeFile(store.transactionPath, JSON.stringify(transaction), "utf8");
+  await store.update(() => {});
+  assert.deepEqual(await store.readEvents(), []);
+  assert.equal(await readFile(store.eventsPath, "utf8"), "");
+  await assert.rejects(readFile(store.transactionPath), { code: "ENOENT" });
+});
+
 test("recovery discards events from an uncommitted transaction", async (t) => {
   const store = await storeFixture(t);
   const before = await store.read();
