@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { open, mkdir, readFile, rename, stat, unlink, appendFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { lock as acquireFileLock } from "proper-lockfile";
 import { FleetError } from "./errors.js";
 
 const REGISTRY_VERSION = 1;
@@ -237,48 +238,28 @@ export class RegistryStore {
     }
   }
 
-  async tryAcquireRecoveryGuard() {
-    try {
-      return await this.createLock(this.recoveryPath);
-    } catch (error) {
-      if (error.code !== "EEXIST") throw error;
-      await this.removeStaleLock(this.recoveryPath);
-      return null;
-    }
-  }
-
   async acquireRecoveryGuard() {
-    const started = this.now();
-    while (true) {
-      const guard = await this.tryAcquireRecoveryGuard();
-      if (guard) return guard;
-      if (this.now() - started >= this.lockTimeoutMs) {
-        throw new FleetError("The registry lock did not become available.", "registry_lock_timeout");
-      }
-      await delay(this.lockRetryMs);
-    }
-  }
-
-  async releaseOwnedLock(path, lock) {
-    await lock.close();
-    const owner = await this.readLockOwner(path);
-    if (owner?.ownerToken !== lock.ownerToken) return false;
+    const retries = this.lockTimeoutMs <= 0 ? 0 : Math.ceil(this.lockTimeoutMs / this.lockRetryMs);
     try {
-      await unlink(path);
-      return true;
+      return await acquireFileLock(this.registryPath, {
+        lockfilePath: this.recoveryPath,
+        realpath: false,
+        stale: 5000,
+        update: 1000,
+        retries: {
+          retries,
+          factor: 1,
+          minTimeout: this.lockRetryMs,
+          maxTimeout: this.lockRetryMs,
+        },
+      });
     } catch (error) {
-      if (error.code === "ENOENT") return false;
+      if (error.code === "ELOCKED") {
+        throw new FleetError("The registry recovery guard did not become available.", "registry_lock_timeout", {
+          cause: error,
+        });
+      }
       throw error;
-    }
-  }
-
-  async recoverStaleRegistryLock() {
-    const guard = await this.tryAcquireRecoveryGuard();
-    if (!guard) return false;
-    try {
-      return await this.removeStaleLock(this.lockPath);
-    } finally {
-      await this.releaseOwnedLock(this.recoveryPath, guard);
     }
   }
 
@@ -286,24 +267,29 @@ export class RegistryStore {
     const started = this.now();
     await mkdir(this.root, { recursive: true });
     while (true) {
+      const releaseGuard = await this.acquireRecoveryGuard();
+      let recovered = false;
       try {
-        return await this.createLock(this.lockPath);
-      } catch (error) {
-        if (error.code !== "EEXIST") throw error;
-        if (await this.shouldRecoverLock(this.lockPath)) {
-          if (await this.recoverStaleRegistryLock()) continue;
+        try {
+          return await this.createLock(this.lockPath);
+        } catch (error) {
+          if (error.code !== "EEXIST") throw error;
+          recovered = await this.removeStaleLock(this.lockPath);
         }
-        if (this.now() - started >= this.lockTimeoutMs) {
-          throw new FleetError("The registry lock did not become available.", "registry_lock_timeout");
-        }
-        await delay(this.lockRetryMs);
+      } finally {
+        await releaseGuard();
       }
+      if (recovered) continue;
+      if (this.now() - started >= this.lockTimeoutMs) {
+        throw new FleetError("The registry lock did not become available.", "registry_lock_timeout");
+      }
+      await delay(this.lockRetryMs);
     }
   }
 
   async releaseLock(lock) {
     await lock.close();
-    const guard = await this.acquireRecoveryGuard();
+    const releaseGuard = await this.acquireRecoveryGuard();
     try {
       const owner = await this.readLockOwner(this.lockPath);
       if (owner?.ownerToken !== lock.ownerToken) return false;
@@ -315,7 +301,7 @@ export class RegistryStore {
         throw error;
       }
     } finally {
-      await this.releaseOwnedLock(this.recoveryPath, guard);
+      await releaseGuard();
     }
   }
 

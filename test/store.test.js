@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, utimes } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
@@ -141,6 +141,45 @@ test("concurrent stale registry mutex recovery permits one replacement owner", a
   assert.equal(await oldStore.releaseLock(stale), false);
   assert.equal(JSON.parse(await readFile(winnerStore.lockPath, "utf8")).ownerToken, winner.ownerToken);
   assert.equal(await winnerStore.releaseLock(winner), true);
+});
+
+test("concurrent stale recovery-guard recovery permits one replacement owner", async (t) => {
+  let offset = 0;
+  const now = () => Date.now() + offset;
+  const oldStore = await storeFixture(t, { now });
+  const stale = await oldStore.acquireLock();
+  const staleToken = stale.ownerToken;
+  await mkdir(oldStore.recoveryPath);
+  const staleTime = new Date(Date.now() - 10_000);
+  await utimes(oldStore.recoveryPath, staleTime, staleTime);
+  offset = 30_001;
+  const stores = Array.from(
+    { length: 8 },
+    () =>
+      new RegistryStore(oldStore.root, {
+        now,
+        isProcessAlive: (_pid, owner) => owner.ownerToken !== staleToken,
+        lockTimeoutMs: 100,
+        lockRetryMs: 1,
+      }),
+  );
+  const results = await Promise.allSettled(stores.map((store) => store.acquireLock()));
+  const winners = results.filter((result) => result.status === "fulfilled");
+  assert.equal(winners.length, 1);
+  const winnerIndex = results.findIndex((result) => result.status === "fulfilled");
+  const winnerStore = stores[winnerIndex];
+  const winner = winners[0].value;
+  assert.equal(await oldStore.releaseLock(stale), false);
+  assert.equal(await winnerStore.releaseLock(winner), true);
+});
+
+test("a crashed recovery guard cannot strand a new registry owner", async (t) => {
+  const store = await storeFixture(t, { lockTimeoutMs: 2000, lockRetryMs: 20 });
+  await mkdir(store.recoveryPath);
+  const recentCrash = new Date(Date.now() - 4500);
+  await utimes(store.recoveryPath, recentCrash, recentCrash);
+  const lock = await store.acquireLock();
+  assert.equal(await store.releaseLock(lock), true);
 });
 
 test("coordinator lease acquisition is atomic and release permits a new owner", async (t) => {

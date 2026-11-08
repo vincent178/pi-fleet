@@ -255,9 +255,9 @@ export class AssignmentCoordinator {
     }
     await this.persistHandled(ignored, handled);
     for (const event of events) {
-      if (!(await this.confirmLease())) return;
       const id = registryEventId(event);
       if (handled.has(id) || !isActionableAssignmentEvent(event)) continue;
+      if (!(await this.confirmLease())) return;
       const assignment = registry.assignments.find((item) => item.id === event.assignmentId);
       if (!assignment) {
         this.onWarning(new Error(`Fleet event ${id} has no registry assignment. Skipping it.`));

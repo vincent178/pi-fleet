@@ -460,7 +460,7 @@ test("an old owner cannot send after replacement delivery completes", async (t) 
     const owned = await confirm();
     if (owned && deliveryRead) {
       checksAfterRead += 1;
-      if (checksAfterRead === 3) {
+      if (checksAfterRead === 2) {
         checked.resolve();
         await resume.promise;
       }

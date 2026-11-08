@@ -238,8 +238,8 @@ removes the lease file. Stale recovery removes it after a crash.
 lock record contains the owner PID, a unique owner token, and the creation time.
 After 30 seconds, a contender checks the owner process. A live owner keeps the
 lock beyond that threshold. A dead owner permits stale recovery. Concurrent
-recovery uses a short guard to permit one replacement owner. Owner-token checks
-prevent an old owner from removing a replacement lock.
+recovery uses `proper-lockfile` to serialize recovery and writer admission.
+Owner-token checks prevent an old owner from removing a replacement lock.
 
 Assignment states have these meanings:
 
@@ -311,8 +311,8 @@ Use `--cwd` to run an agent in an existing worktree.
          Pi agents
 ```
 
-The core uses Node.js built-ins. It has no runtime npm dependencies. Atomic
-registry writes and a registry lock support concurrent CLI commands.
+The core uses Node.js built-ins and `proper-lockfile`. Atomic registry writes
+and a registry lock support concurrent CLI commands.
 
 ## Development
 
