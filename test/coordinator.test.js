@@ -819,6 +819,37 @@ test("pane moves reconcile before the next assignment refresh", async (t) => {
   assert.deepEqual(watcher.paneIds, ["p-new"]);
 });
 
+test("failed move reconciliation retains the move for retry after agent exit", async (t) => {
+  const { fleet, herdr, watcher, warnings, coordinator } = await fixture(t);
+  herdr.agents.delete("agent-a1");
+  const status = fleet.status.bind(fleet);
+  let failRefresh = true;
+  fleet.status = async (...args) => {
+    if (failRefresh) {
+      failRefresh = false;
+      throw new Error("refresh failed");
+    }
+    return status(...args);
+  };
+  watcher.emit("event", {
+    event: "pane_moved",
+    data: {
+      previous_pane_id: "p-a1",
+      pane: { pane_id: "p-new", tab_id: "t-new", workspace_id: "w2" },
+    },
+  });
+  await idle(coordinator);
+  assert.equal(coordinator.pendingMoves.length, 1);
+  assert.ok(warnings.some((error) => error.message === "refresh failed"));
+  await coordinator.requestReconciliation();
+  await idle(coordinator);
+  assert.equal(coordinator.pendingMoves.length, 0);
+  const registry = await fleet.store.read();
+  assert.equal(registry.assignments[0].paneId, "p-new");
+  assert.equal(registry.assignments[0].tabId, "t-new");
+  assert.equal(registry.assignments[0].status, "missing");
+});
+
 test("events received during delivery are preserved and sent in order", async (t) => {
   let releaseFirst;
   let firstStarted;

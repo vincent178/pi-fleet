@@ -261,12 +261,16 @@ export class AssignmentCoordinator {
   async reconcile() {
     if (!(await this.confirmLease())) return;
     const moves = this.pendingMoves.splice(0);
-    for (const event of moves) {
-      await this.fleet.reconcileEvent(event);
-    }
     try {
+      for (const event of moves) {
+        await this.fleet.reconcileEvent(event);
+      }
       await this.fleet.status();
     } catch (error) {
+      if (moves.length > 0) {
+        this.pendingMoves.unshift(...moves);
+        throw error;
+      }
       this.onWarning(error);
     }
     if (!(await this.confirmLease())) return;

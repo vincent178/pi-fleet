@@ -130,6 +130,14 @@ test("event filter accepts only registered assignment locations", () => {
   assert.equal(isAssignmentEvent({ event: "pane_closed", data: { pane_id: "w1:p2" } }, paneIds, tabIds), false);
   assert.equal(isAssignmentEvent({ event: "tab_closed", data: { tab_id: "w1:t1" } }, paneIds, tabIds), true);
   assert.equal(isAssignmentEvent({ event: "pane_moved", data: { previous_pane_id: "w1:p1" } }, paneIds, tabIds), true);
+  assert.equal(
+    isAssignmentEvent({ event: "pane_moved", data: { pane: { pane_id: "w1:p1", tab_id: "w1:t1" } } }, paneIds, tabIds),
+    true,
+  );
+  assert.equal(
+    isAssignmentEvent({ event: "pane_moved", data: { pane: { pane_id: "w1:p2", tab_id: "w1:t2" } } }, paneIds, tabIds),
+    false,
+  );
   assert.equal(isAssignmentEvent({ event: "pane_agent_detected", data: { pane_id: "w1:p2" } }, paneIds, tabIds), false);
 });
 
