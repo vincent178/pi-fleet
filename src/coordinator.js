@@ -125,11 +125,20 @@ export class AssignmentCoordinator {
         await this.releaseLease();
         return false;
       }
+      if (generation !== this.generation || !this.active) {
+        await this.releaseLease();
+        return false;
+      }
       this.watcher.on("ready", this.onReady);
       this.watcher.on("event", this.onEvent);
       this.watcher.on("warning", this.onWarningEvent);
       this.fileWatcher = this.watchDirectory(this.fleet.root, this.onFileEvent);
       this.fileWatcher.on("error", this.onWarningEvent);
+      if (generation !== this.generation || !this.active) {
+        this.deactivate();
+        await this.releaseLease();
+        return false;
+      }
       this.watcher.start();
       await this.requestReconciliation();
       return this.active;

@@ -151,6 +151,7 @@ async function fixture(t, options = {}) {
     watchDirectory: (_path, onEvent) => {
       const file = new FakeDirectory(onEvent);
       files.push(file);
+      options.onWatchDirectory?.(coordinator);
       return file;
     },
     leaseDurationMs: options.leaseDurationMs,
@@ -233,6 +234,19 @@ test("startup does not install watchers after lease ownership is lost", async (t
     await initialize();
     await unlink(fleet.store.coordinatorLeasePath);
   };
+  assert.equal(await coordinator.start(), false);
+  assert.equal(coordinator.active, false);
+  assert.equal(watcher.startCalls, 0);
+});
+
+test("stop during startup prevents later watcher activation", async (t) => {
+  const { watcher, coordinator } = await fixture(t, {
+    initializeRegistry: false,
+    deferStart: true,
+    onWatchDirectory: (current) => {
+      void current.stop();
+    },
+  });
   assert.equal(await coordinator.start(), false);
   assert.equal(coordinator.active, false);
   assert.equal(watcher.startCalls, 0);

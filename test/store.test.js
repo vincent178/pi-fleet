@@ -67,6 +67,24 @@ test("an event append failure rolls back the registry and partial log", async (t
   assert.deepEqual(await store.readEvents(), []);
 });
 
+test("rollback restores the exact tail after event-log repair", async (t) => {
+  const store = await storeFixture(t);
+  const original = Buffer.from('{"id":"original-partial"', "utf8");
+  await writeFile(store.eventsPath, original);
+  const appendTransitions = store.appendTransitions.bind(store);
+  store.appendTransitions = async (...args) => {
+    await appendTransitions(...args);
+    throw new Error("registry commit failed");
+  };
+  await assert.rejects(
+    store.update((registry) => {
+      registry.assignments.push({ id: "asg_1", name: "w-a", team: "team-a", status: "pending" });
+    }),
+    /registry commit failed/,
+  );
+  assert.deepEqual(await readFile(store.eventsPath), original);
+});
+
 test("registry writes survive concurrent updates", async (t) => {
   const store = await storeFixture(t);
   await Promise.all(

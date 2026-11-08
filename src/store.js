@@ -375,18 +375,14 @@ export class RegistryStore {
       const result = await mutator(after);
       if (JSON.stringify(before) === JSON.stringify(after)) return result;
       after.updatedAt = new Date().toISOString();
-      let eventLogSize = 0;
-      try {
-        eventLogSize = (await stat(this.eventsPath)).size;
-      } catch (error) {
-        if (error.code !== "ENOENT") throw error;
-      }
+      const eventTail = await this.readEventsTail();
       try {
         await this.appendTransitions(before, after);
         await writeAtomic(this.registryPath, after);
       } catch (error) {
         try {
-          await truncate(this.eventsPath, eventLogSize);
+          await truncate(this.eventsPath, eventTail.boundary);
+          await appendFile(this.eventsPath, eventTail.tail);
         } catch (rollbackError) {
           if (rollbackError.code !== "ENOENT") {
             throw new FleetError("The registry event-log rollback failed.", "registry_rollback_failed", {
@@ -431,15 +427,15 @@ export class RegistryStore {
     }
   }
 
-  async repairEventsTail() {
+  async readEventsTail() {
     let details;
     try {
       details = await stat(this.eventsPath);
     } catch (error) {
-      if (error.code === "ENOENT") return false;
+      if (error.code === "ENOENT") return { boundary: 0, tail: Buffer.alloc(0) };
       throw error;
     }
-    if (details.size === 0) return false;
+    if (details.size === 0) return { boundary: 0, tail: Buffer.alloc(0) };
     const handle = await open(this.eventsPath, "r");
     let position = details.size;
     let boundary = 0;
@@ -461,6 +457,11 @@ export class RegistryStore {
     } finally {
       await handle.close();
     }
+    return { boundary, tail };
+  }
+
+  async repairEventsTail() {
+    const { boundary, tail } = await this.readEventsTail();
     if (tail.length === 0 || tail[tail.length - 1] === 10) return false;
     try {
       JSON.parse(tail.toString("utf8"));
