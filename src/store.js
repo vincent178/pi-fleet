@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { open, mkdir, readFile, rename, stat, unlink, appendFile, truncate, writeFile } from "node:fs/promises";
+import { open, mkdir, readFile, rename, stat, unlink, truncate, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { flock } from "fs-ext";
@@ -77,6 +77,16 @@ async function writeTextAtomic(path, source) {
 
 async function writeAtomic(path, value) {
   await writeTextAtomic(path, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+async function appendFileDurable(path, source) {
+  const handle = await open(path, "a");
+  try {
+    await handle.writeFile(source);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
 }
 
 function leaseRecord(lease) {
@@ -424,7 +434,7 @@ export class RegistryStore {
       if (error.code !== "ENOENT" || eventTail.boundary !== 0 || eventTail.tail.length !== 0) throw error;
       await writeFile(this.eventsPath, "");
     }
-    await appendFile(this.eventsPath, eventTail.tail);
+    await appendFileDurable(this.eventsPath, eventTail.tail);
   }
 
   async recoverRegistryTransaction() {
@@ -486,7 +496,7 @@ export class RegistryStore {
     }
     if (events.length > 0) {
       const separator = (await this.repairEventsTail()) ? "\n" : "";
-      await appendFile(this.eventsPath, separator + events.map((event) => JSON.stringify(event)).join("\n") + "\n", "utf8");
+      await appendFileDurable(this.eventsPath, separator + events.map((event) => JSON.stringify(event)).join("\n") + "\n");
     }
   }
 
@@ -589,7 +599,7 @@ export class RegistryStore {
         version: DELIVERY_VERSION,
         handledEventIds: [...handledEventIds],
       });
-      if (handledEventIds.size > DELIVERY_HISTORY_LIMIT) await this.compactDelivery(handledEventIds);
+      if (handledEventIds.size > DELIVERY_HISTORY_LIMIT * 2) await this.compactDelivery(handledEventIds);
     } finally {
       await this.releaseLock(lock);
     }

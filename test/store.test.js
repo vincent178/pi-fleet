@@ -455,7 +455,7 @@ test("delivery compaction retains recent history and pending events", async (t) 
     from: "working",
     to: "blocked",
   };
-  const handled = Array.from({ length: 1200 }, (_, index) => ({
+  const handled = Array.from({ length: 2001 }, (_, index) => ({
     id: `evt_handled_${index}`,
     timestamp: "2026-01-01T00:00:00.000Z",
     type: "team.created",

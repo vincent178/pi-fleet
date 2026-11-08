@@ -83,7 +83,10 @@ export class AssignmentCoordinator {
   }
 
   async start() {
-    if (this.startPromise) return this.startPromise;
+    if (this.startPromise) {
+      const started = await this.startPromise;
+      if (started || this.active) return true;
+    }
     if (this.active) return true;
     if (this.stopPromise) await this.stopPromise;
     if (this.drainPromise) await this.drainPromise;

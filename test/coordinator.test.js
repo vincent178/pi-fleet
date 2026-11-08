@@ -252,6 +252,32 @@ test("stop during startup prevents later watcher activation", async (t) => {
   assert.equal(watcher.startCalls, 0);
 });
 
+test("restart during cancelled startup starts a new session", async (t) => {
+  const { fleet, coordinator } = await fixture(t, { initializeRegistry: false, deferStart: true });
+  const initialize = fleet.store.initializeDelivery.bind(fleet.store);
+  const entered = deferred();
+  const resume = deferred();
+  let calls = 0;
+  fleet.store.initializeDelivery = async () => {
+    calls += 1;
+    if (calls === 1) {
+      entered.resolve();
+      await resume.promise;
+      return;
+    }
+    return initialize();
+  };
+  const first = coordinator.start();
+  await entered.promise;
+  const stopping = coordinator.stop();
+  const restarting = coordinator.start();
+  resume.resolve();
+  await stopping;
+  assert.equal(await first, false);
+  assert.equal(await restarting, true);
+  assert.equal(coordinator.active, true);
+});
+
 test("concurrent starts await coordinator initialization", async (t) => {
   const { coordinator } = await fixture(t, { initializeRegistry: false, deferStart: true });
   const initialized = deferred();
